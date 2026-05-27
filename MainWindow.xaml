@@ -1209,6 +1209,46 @@
                     </ScrollViewer.Style>
                     <StackPanel MaxWidth="860"
                                 Margin="0,28,0,56">
+                        <TextBlock Text="系统" Style="{StaticResource SectionTitleStyle}" />
+                        <Border Style="{StaticResource CardStyle}">
+                            <Grid>
+                                <Grid.RowDefinitions>
+                                    <RowDefinition Height="64" />
+                                </Grid.RowDefinitions>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="170" />
+                                    <ColumnDefinition Width="120" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <TextBlock Text="开机自启"
+                                           FontSize="17"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Margin="14,0,0,0" />
+                                <ToggleButton Grid.Column="1"
+                                              Width="84"
+                                              HorizontalAlignment="Left"
+                                              VerticalAlignment="Center"
+                                              Style="{StaticResource ToolbarToggleButtonStyle}"
+                                              IsChecked="{Binding StartWithWindows, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                    <TextBlock>
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="关闭" />
+                                                <Setter Property="Foreground" Value="{StaticResource SettingsTextBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Text" Value="开启" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </ToggleButton>
+                            </Grid>
+                        </Border>
+
                         <TextBlock Text="快捷键" Style="{StaticResource SectionTitleStyle}" />
                         <Border Style="{StaticResource CardStyle}">
                             <Grid>

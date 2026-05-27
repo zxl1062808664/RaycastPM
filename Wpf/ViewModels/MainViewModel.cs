@@ -42,6 +42,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private double? _calculatorResult;
     private CurrencyResult? _currencyResult;
     private bool _isRefreshingRates;
+    private bool _startWithWindows;
     private int _launcherSearchVersion;
     private CancellationTokenSource? _launcherSearchCancellation;
 
@@ -49,6 +50,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         _state = _stateStore.Load();
         _fileSearch = new LocalFileSearchService(_stateStore.FolderPath);
+        SyncStartWithWindowsSetting();
         _noteFontSizeText = Settings.NoteFontSize.ToString("0", CultureInfo.InvariantCulture);
         ClipboardItems = new ObservableCollection<ClipboardEntry>(_state.ClipboardItems);
         Notes = new ObservableCollection<NoteItem>(_state.Notes);
@@ -349,6 +351,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public string DataFolder => _stateStore.FolderPath;
 
+    public bool StartWithWindows
+    {
+        get => _startWithWindows;
+        set
+        {
+            if (_startWithWindows == value)
+            {
+                return;
+            }
+
+            if (!StartupManager.SetEnabled(value))
+            {
+                OnPropertyChanged();
+                return;
+            }
+
+            var actual = StartupManager.IsEnabled();
+            Settings.StartWithWindows = actual;
+            if (!SetProperty(ref _startWithWindows, actual))
+            {
+                OnPropertyChanged();
+            }
+
+            Save();
+        }
+    }
+
     public void ShowSection(AppSection section)
     {
         SelectedSection = section;
@@ -390,6 +419,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _ratesRefreshTimer.Tick -= OnRatesRefreshTimerTick;
         _launcherSearchCancellation?.Cancel();
         _launcherSearchCancellation?.Dispose();
+    }
+
+    private void SyncStartWithWindowsSetting()
+    {
+        var savedValue = Settings.StartWithWindows;
+        if (savedValue)
+        {
+            StartupManager.SetEnabled(true);
+        }
+
+        _startWithWindows = StartupManager.IsEnabled();
+        Settings.StartWithWindows = _startWithWindows;
+        if (savedValue != _startWithWindows)
+        {
+            _stateStore.Save(_state);
+        }
     }
 
     private void QueueLauncherSearch()

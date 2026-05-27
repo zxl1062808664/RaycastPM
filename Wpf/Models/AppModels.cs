@@ -29,6 +29,7 @@ public sealed class AppSettings
     public HotKeyGesture ClipboardHotKey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Alt, "V");
     public HotKeyGesture NotesHotKey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Alt, "N");
     public HotKeyGesture SettingsHotKey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Alt, "S");
+    public bool StartWithWindows { get; set; }
     public double NoteFontSize { get; set; } = 18;
     public List<string> CustomAppDirectories { get; set; } = [];
     public Dictionary<string, double> ExchangeRatesToCny { get; set; } = new(StringComparer.OrdinalIgnoreCase)
