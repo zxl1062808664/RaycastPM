@@ -1,0 +1,9 @@
+bin/
+obj/
+.tmp/
+.idea/
+*.user
+*.suo
+*.rsuser
+*.log
+.vs/
