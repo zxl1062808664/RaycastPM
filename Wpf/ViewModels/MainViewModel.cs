@@ -20,7 +20,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly ClipboardMonitor _clipboardMonitor = new();
     private readonly DispatcherTimer _ratesRefreshTimer = new();
     private readonly DispatcherTimer _indexProgressTimer = new();
-    private readonly DispatcherTimer _launcherSearchTimer = new();
+    private readonly CancellationTokenSource _fileInitializationCancellation = new();
     private readonly AppState _state;
     private AppSection _selectedSection = AppSection.Settings;
     private SettingsPage _selectedSettingsPage = SettingsPage.General;
@@ -45,6 +45,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _startWithWindows;
     private int _launcherSearchVersion;
     private CancellationTokenSource? _launcherSearchCancellation;
+    private bool _disposed;
 
     public MainViewModel()
     {
@@ -72,7 +73,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         DeleteSelectedClipboardCommand = new RelayCommand(DeleteSelectedClipboard, () => SelectedClipboardEntry is not null);
         AddNoteCommand = new RelayCommand(AddNote);
         DeleteSelectedNoteCommand = new RelayCommand(DeleteSelectedNote, () => SelectedNote is not null);
-        RefreshRatesCommand = new RelayCommand(async () => await RefreshRatesAsync());
+        RefreshRatesCommand = new RelayCommand(() => Observe(RefreshRatesAsync(), "refresh rates command"));
         CopyCalculatorResultCommand = new RelayCommand(CopyCalculatorResult, () => CalculatorResult is not null || CurrencyResult is not null);
         SaveCommand = new RelayCommand(Save);
 
@@ -80,15 +81,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Notes.CollectionChanged += (_, _) => Save();
         _clipboardMonitor.ClipboardChanged += (_, entry) => UpsertClipboardEntry(entry);
         _clipboardMonitor.Start();
-        _launcherSearchTimer.Interval = TimeSpan.FromMilliseconds(180);
-        _launcherSearchTimer.Tick += OnLauncherSearchTimerTick;
         _indexProgressTimer.Interval = TimeSpan.FromMilliseconds(400);
         _indexProgressTimer.Tick += OnIndexProgressTimerTick;
-        InitializeFileIndex();
+        Observe(InitializeFileIndexAsync(), "initialize file index");
         _ratesRefreshTimer.Interval = ExchangeRateRefreshInterval;
         _ratesRefreshTimer.Tick += OnRatesRefreshTimerTick;
         _ratesRefreshTimer.Start();
-        _ = RefreshRatesIfStaleAsync();
+        Observe(RefreshRatesIfStaleAsync(), "refresh rates on startup");
         RefreshUsageItems();
         SelectedNote = FilteredNotes.FirstOrDefault();
     }
@@ -378,6 +377,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public bool AutoScanOnDailyFirstLaunch
+    {
+        get => Settings.AutoScanOnDailyFirstLaunch;
+        set
+        {
+            if (Settings.AutoScanOnDailyFirstLaunch == value)
+            {
+                return;
+            }
+
+            Settings.AutoScanOnDailyFirstLaunch = value;
+            OnPropertyChanged();
+            Save();
+        }
+    }
+
     public void ShowSection(AppSection section)
     {
         SelectedSection = section;
@@ -404,75 +419,136 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void Save()
     {
-        _state.ClipboardItems = ClipboardItems.Take(120).ToList();
-        _state.Notes = Notes.ToList();
-        _stateStore.Save(_state);
+        try
+        {
+            _state.ClipboardItems = ClipboardItems.Take(120).ToList();
+            _state.Notes = Notes.ToList();
+            _stateStore.Save(_state);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "view model save");
+        }
     }
 
     public void Dispose()
     {
-        _launcherSearchTimer.Stop();
-        _launcherSearchTimer.Tick -= OnLauncherSearchTimerTick;
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
         _indexProgressTimer.Stop();
         _indexProgressTimer.Tick -= OnIndexProgressTimerTick;
         _ratesRefreshTimer.Stop();
         _ratesRefreshTimer.Tick -= OnRatesRefreshTimerTick;
+        _clipboardMonitor.Stop();
+        _fileInitializationCancellation.Cancel();
+        _fileInitializationCancellation.Dispose();
         _launcherSearchCancellation?.Cancel();
         _launcherSearchCancellation?.Dispose();
     }
 
     private void SyncStartWithWindowsSetting()
     {
-        var savedValue = Settings.StartWithWindows;
-        if (savedValue)
+        try
         {
-            StartupManager.SetEnabled(true);
-        }
+            var savedValue = Settings.StartWithWindows;
+            if (savedValue)
+            {
+                StartupManager.SetEnabled(true);
+            }
 
-        _startWithWindows = StartupManager.IsEnabled();
-        Settings.StartWithWindows = _startWithWindows;
-        if (savedValue != _startWithWindows)
+            _startWithWindows = StartupManager.IsEnabled();
+            Settings.StartWithWindows = _startWithWindows;
+            if (savedValue != _startWithWindows)
+            {
+                _stateStore.Save(_state);
+            }
+        }
+        catch (Exception ex)
         {
-            _stateStore.Save(_state);
+            AppDiagnostics.LogException(ex, "sync startup setting");
+            _startWithWindows = false;
+            Settings.StartWithWindows = false;
         }
     }
 
     private void QueueLauncherSearch()
     {
-        _launcherSearchTimer.Stop();
-        _launcherSearchCancellation?.Cancel();
-        _launcherSearchTimer.Start();
+        Observe(RefreshLauncherResultsAsync(), "launcher search");
     }
 
-    private void OnLauncherSearchTimerTick(object? sender, EventArgs e)
+    private async Task InitializeFileIndexAsync()
     {
-        _launcherSearchTimer.Stop();
-        _ = RefreshLauncherResultsAsync();
-    }
-
-    private void InitializeFileIndex()
-    {
-        var loadedCache = _fileSearch.LoadCache();
-        var today = DateOnly.FromDateTime(DateTime.Now);
-        if (Settings.LastFileIndexScanDate == today && loadedCache)
+        try
         {
-            IndexProgressValue = 100;
-            IndexProgressText = $"已加载本地索引缓存，收录 {_fileSearch.IndexedCount:N0} 项";
-            IsIndexingFiles = false;
-            LauncherStatusText = "输入关键词搜索本机文件";
-            return;
-        }
+            var cancellationToken = _fileInitializationCancellation.Token;
+            IndexProgressValue = 0;
+            IndexProgressText = "正在加载本地索引缓存...";
+            LauncherStatusText = IndexProgressText;
+            IsIndexingFiles = true;
+            _indexProgressTimer.Start();
 
-        _fileSearch.StartIndexing();
-        Settings.LastFileIndexScanDate = today;
-        Save();
-        _indexProgressTimer.Start();
-        RefreshIndexProgress();
+            var loadedCache = await _fileSearch.LoadCacheAsync(cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
+
+            var today = DateOnly.FromDateTime(DateTime.Now);
+            if (!Settings.AutoScanOnDailyFirstLaunch)
+            {
+                IndexProgressValue = loadedCache ? 100 : 0;
+                IndexProgressText = loadedCache
+                    ? $"已加载本地索引缓存，收录 {_fileSearch.IndexedCount:N0} 项"
+                    : "已关闭自动扫描，可手动重新扫描硬盘数据";
+                IsIndexingFiles = false;
+                LauncherStatusText = loadedCache ? "输入关键词搜索本机文件" : IndexProgressText;
+                _indexProgressTimer.Stop();
+                QueueLauncherSearch();
+                return;
+            }
+
+            if (Settings.LastFileIndexScanDate == today && loadedCache)
+            {
+                IndexProgressValue = 100;
+                IndexProgressText = $"已加载本地索引缓存，收录 {_fileSearch.IndexedCount:N0} 项";
+                IsIndexingFiles = false;
+                LauncherStatusText = "输入关键词搜索本机文件";
+                _indexProgressTimer.Stop();
+                QueueLauncherSearch();
+                return;
+            }
+
+            _fileSearch.StartIndexing();
+            Settings.LastFileIndexScanDate = today;
+            Save();
+            _indexProgressTimer.Start();
+            RefreshIndexProgress();
+            QueueLauncherSearch();
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "initialize file index");
+            IsIndexingFiles = false;
+            _indexProgressTimer.Stop();
+        }
     }
 
     private void OnIndexProgressTimerTick(object? sender, EventArgs e)
     {
-        RefreshIndexProgress();
+        try
+        {
+            RefreshIndexProgress();
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "refresh index progress");
+            IsIndexingFiles = false;
+            _indexProgressTimer.Stop();
+        }
     }
 
     private void RefreshIndexProgress()
@@ -480,6 +556,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         var progress = _fileSearch.GetProgress();
         IsIndexingFiles = progress.IsIndexing;
         IndexProgressValue = progress.CompletionRatio * 100;
+
+        if (progress.IsLoadingCache)
+        {
+            IndexProgressText = $"正在加载本地索引缓存，已收录 {progress.IndexedCount:N0} 项";
+            if (progress.CacheBytesTotal > 0)
+            {
+                var readMb = progress.CacheBytesRead / 1024d / 1024d;
+                var totalMb = progress.CacheBytesTotal / 1024d / 1024d;
+                IndexProgressText = progress.IndexedCount > 0
+                    ? $"正在构建本地索引缓存，已收录 {progress.IndexedCount:N0} 项，已读取 {readMb:N0}/{totalMb:N0} MB"
+                    : $"正在读取本地索引缓存，已读取 {readMb:N0}/{totalMb:N0} MB";
+            }
+
+            if (string.IsNullOrWhiteSpace(LauncherQuery) && FilteredApps.Count == 0)
+            {
+                LauncherStatusText = IndexProgressText;
+            }
+            return;
+        }
 
         if (progress.IsIndexing)
         {
@@ -507,6 +602,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void RebuildFileIndex()
     {
+        _fileInitializationCancellation.Cancel();
         _launcherSearchCancellation?.Cancel();
         FilteredApps.Clear();
         SelectedApp = null;
@@ -523,13 +619,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         var query = LauncherQuery.Trim();
         var version = Interlocked.Increment(ref _launcherSearchVersion);
-
-            _launcherSearchCancellation?.Cancel();
-            _launcherSearchCancellation?.Dispose();
-            _launcherSearchCancellation = null;
+        var oldCancellation = _launcherSearchCancellation;
+        oldCancellation?.Cancel();
 
         if (string.IsNullOrWhiteSpace(query))
         {
+            _launcherSearchCancellation = null;
             var frequentItems = UsageItems
                 .OrderByDescending(item => item.LaunchCount)
                 .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
@@ -547,9 +642,6 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        var oldCancellation = _launcherSearchCancellation;
-        oldCancellation?.Cancel();
-        oldCancellation?.Dispose();
         var cancellation = new CancellationTokenSource();
         _launcherSearchCancellation = cancellation;
         IsSearchingLauncher = true;
@@ -557,7 +649,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
-            var response = await _fileSearch.SearchAsync(query, 400, cancellation.Token);
+            var response = await _fileSearch.SearchAsync(query, 200, cancellation.Token);
             if (version != _launcherSearchVersion || cancellation.IsCancellationRequested)
             {
                 return;
@@ -583,12 +675,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         catch (OperationCanceledException)
         {
         }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "launcher search");
+        }
         finally
         {
             if (version == _launcherSearchVersion)
             {
                 IsSearchingLauncher = false;
-                _launcherSearchCancellation = null;
+                if (ReferenceEquals(_launcherSearchCancellation, cancellation))
+                {
+                    _launcherSearchCancellation = null;
+                }
             }
 
             cancellation.Dispose();
@@ -597,13 +696,25 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void RefreshToolResults()
     {
-        CurrencyResult = CurrencyConverter.Convert(LauncherQuery, Settings.ExchangeRatesToCny);
-        CalculatorResult = CurrencyResult is null && ExpressionEvaluator.LooksLikeCalculation(LauncherQuery)
-            ? ExpressionEvaluator.Evaluate(LauncherQuery)
-            : null;
-        OnPropertyChanged(nameof(CalculatorResultText));
-        OnPropertyChanged(nameof(CurrencyResultText));
-        OnPropertyChanged(nameof(HasToolResult));
+        try
+        {
+            CurrencyResult = CurrencyConverter.Convert(LauncherQuery, Settings.ExchangeRatesToCny);
+            CalculatorResult = CurrencyResult is null && ExpressionEvaluator.LooksLikeCalculation(LauncherQuery)
+                ? ExpressionEvaluator.Evaluate(LauncherQuery)
+                : null;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "refresh tool results");
+            CurrencyResult = null;
+            CalculatorResult = null;
+        }
+        finally
+        {
+            OnPropertyChanged(nameof(CalculatorResultText));
+            OnPropertyChanged(nameof(CurrencyResultText));
+            OnPropertyChanged(nameof(HasToolResult));
+        }
     }
 
     private LauncherSearchResult ApplyUsageCount(LauncherSearchResult item)
@@ -667,7 +778,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         RefreshUsageItems();
-        _ = RefreshLauncherResultsAsync();
+        Observe(RefreshLauncherResultsAsync(), "refresh launcher after clearing usage");
         Save();
     }
 
@@ -733,6 +844,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
         catch (Exception ex)
         {
+            AppDiagnostics.LogException(ex, "open launcher item");
             LauncherStatusText = $"打开失败：{ex.Message}";
         }
     }
@@ -816,8 +928,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 _clipboardMonitor.RememberImage(image);
             }
         }
-        catch
+        catch (Exception ex)
         {
+            _clipboardMonitor.IgnoreNextChange = false;
+            AppDiagnostics.LogException(ex, "copy clipboard item");
             return;
         }
 
@@ -899,8 +1013,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             RefreshToolResults();
             Save();
         }
-        catch
+        catch (Exception ex)
         {
+            AppDiagnostics.LogException(ex, "refresh rates");
         }
         finally
         {
@@ -921,7 +1036,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnRatesRefreshTimerTick(object? sender, EventArgs e)
     {
-        _ = RefreshRatesAsync();
+        Observe(RefreshRatesAsync(), "refresh rates timer");
     }
 
     private void CopyCalculatorResult()
@@ -937,14 +1052,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
-        _clipboardMonitor.IgnoreNextChange = true;
-        WpfClipboard.SetText(text);
-        UpsertClipboardEntry(new ClipboardEntry
+        try
         {
-            Kind = ClipboardItemKind.Text,
-            Content = text,
-            Source = "RaycastPM"
-        });
+            _clipboardMonitor.IgnoreNextChange = true;
+            WpfClipboard.SetText(text);
+            UpsertClipboardEntry(new ClipboardEntry
+            {
+                Kind = ClipboardItemKind.Text,
+                Content = text,
+                Source = "RaycastPM"
+            });
+        }
+        catch (Exception ex)
+        {
+            _clipboardMonitor.IgnoreNextChange = false;
+            AppDiagnostics.LogException(ex, "copy calculator result");
+        }
     }
 
     private static string FormatCalculationNumber(double value)
@@ -966,6 +1089,31 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         note.UpdatedAt = DateTimeOffset.Now;
         Save();
+    }
+
+    private static void Observe(Task task, string context)
+    {
+        if (task.IsCompletedSuccessfully)
+        {
+            return;
+        }
+
+        _ = ObserveAsync(task, context);
+    }
+
+    private static async Task ObserveAsync(Task task, string context)
+    {
+        try
+        {
+            await task;
+        }
+        catch (OperationCanceledException)
+        {
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, context);
+        }
     }
 
     private static void Replace<T>(ObservableCollection<T> target, IEnumerable<T> items)

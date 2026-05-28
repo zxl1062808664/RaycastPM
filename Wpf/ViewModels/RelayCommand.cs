@@ -1,4 +1,5 @@
 using System.Windows.Input;
+using RaycastPM.Services;
 
 namespace RaycastPM.ViewModels;
 
@@ -22,12 +23,27 @@ public sealed class RelayCommand : ICommand
 
     public bool CanExecute(object? parameter)
     {
-        return _canExecute?.Invoke(parameter) ?? true;
+        try
+        {
+            return _canExecute?.Invoke(parameter) ?? true;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "command can execute");
+            return false;
+        }
     }
 
     public void Execute(object? parameter)
     {
-        _execute(parameter);
+        try
+        {
+            _execute(parameter);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "command execute");
+        }
     }
 
     public void RaiseCanExecuteChanged()

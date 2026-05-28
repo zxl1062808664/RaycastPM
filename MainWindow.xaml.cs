@@ -1,4 +1,5 @@
 using System.ComponentModel;
+using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
@@ -15,6 +16,7 @@ public partial class MainWindow : Window
 {
     private readonly MainViewModel _viewModel = new();
     private readonly GlobalHotKeyService _hotKeys = new();
+    private readonly System.Drawing.Icon _appIcon = LoadTrayIcon();
     private readonly Forms.NotifyIcon _trayIcon;
     private IntPtr _pasteTargetWindow;
     private bool _isExiting;
@@ -59,12 +61,20 @@ public partial class MainWindow : Window
         var trayIcon = new Forms.NotifyIcon
         {
             Text = "RaycastPM",
-            Icon = System.Drawing.SystemIcons.Application,
+            Icon = _appIcon,
             ContextMenuStrip = menu,
             Visible = true
         };
         trayIcon.DoubleClick += (_, _) => ShowFromTray(AppSection.Launcher);
         return trayIcon;
+    }
+
+    private static System.Drawing.Icon LoadTrayIcon()
+    {
+        var iconPath = Path.Combine(AppContext.BaseDirectory, "Assets", "AppIcon.ico");
+        return File.Exists(iconPath)
+            ? new System.Drawing.Icon(iconPath)
+            : (System.Drawing.Icon)System.Drawing.SystemIcons.Application.Clone();
     }
 
     private static Forms.ToolStripMenuItem CreateTrayMenuItem(string text, Action action)
@@ -161,6 +171,7 @@ public partial class MainWindow : Window
         _hotKeys.Dispose();
         _trayIcon.Visible = false;
         _trayIcon.Dispose();
+        _appIcon.Dispose();
     }
 
     private void WindowChrome_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)

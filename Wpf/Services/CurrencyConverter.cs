@@ -8,6 +8,11 @@ namespace RaycastPM.Services;
 
 public static partial class CurrencyConverter
 {
+    private static readonly HttpClient Client = new()
+    {
+        Timeout = TimeSpan.FromSeconds(10)
+    };
+
     public static CurrencyResult? Convert(string query, IReadOnlyDictionary<string, double> ratesToCny)
     {
         var match = CurrencyPattern().Match(query);
@@ -35,10 +40,18 @@ public static partial class CurrencyConverter
 
     public static async Task<Dictionary<string, double>?> FetchRatesToCnyAsync()
     {
-        using var client = new HttpClient();
-        var snapshot = await client.GetFromJsonAsync<ExchangeRatesResponse>("https://open.er-api.com/v6/latest/CNY");
-        if (snapshot?.Rates is null)
+        ExchangeRatesResponse? snapshot;
+        try
         {
+            snapshot = await Client.GetFromJsonAsync<ExchangeRatesResponse>("https://open.er-api.com/v6/latest/CNY");
+            if (snapshot?.Rates is null)
+            {
+                return null;
+            }
+        }
+        catch (Exception ex) when (ex is HttpRequestException or TaskCanceledException or System.Text.Json.JsonException)
+        {
+            AppDiagnostics.LogException(ex, "fetch exchange rates");
             return null;
         }
 

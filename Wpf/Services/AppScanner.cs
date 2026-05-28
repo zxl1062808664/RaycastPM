@@ -6,17 +6,24 @@ namespace RaycastPM.Services;
 public sealed class AppScanner
 {
     private static readonly string[] LaunchableExtensions = [".exe", ".lnk", ".appref-ms"];
+    private static readonly EnumerationOptions ScanEnumerationOptions = new()
+    {
+        AttributesToSkip = 0,
+        IgnoreInaccessible = true,
+        RecurseSubdirectories = false,
+        ReturnSpecialDirectories = false
+    };
 
-    public Task<IReadOnlyList<InstalledApp>> ScanAsync(IEnumerable<string> customDirectories)
+    public Task<IReadOnlyList<InstalledApp>> ScanAsync(IEnumerable<string>? customDirectories)
     {
         return Task.Run(() => Scan(customDirectories));
     }
 
-    private static IReadOnlyList<InstalledApp> Scan(IEnumerable<string> customDirectories)
+    private static IReadOnlyList<InstalledApp> Scan(IEnumerable<string>? customDirectories)
     {
         var roots = DefaultRoots()
-            .Concat(customDirectories.Select(Environment.ExpandEnvironmentVariables))
-            .Where(path => !string.IsNullOrWhiteSpace(path) && Directory.Exists(path))
+            .Concat((customDirectories ?? Enumerable.Empty<string>()).Select(Environment.ExpandEnvironmentVariables))
+            .Where(path => !string.IsNullOrWhiteSpace(path) && SafeDirectoryExists(path))
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
@@ -63,26 +70,38 @@ public sealed class AppScanner
     private static IEnumerable<string> EnumerateLaunchables(string root)
     {
         var pending = new Stack<string>();
+        var visited = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         pending.Push(root);
 
         while (pending.Count > 0)
         {
             var current = pending.Pop();
-            IEnumerable<string> directories;
-            IEnumerable<string> files;
+            if (!visited.Add(NormalizeDirectory(current)))
+            {
+                continue;
+            }
+
+            string[] directories;
+            string[] files;
 
             try
             {
-                directories = Directory.EnumerateDirectories(current);
-                files = Directory.EnumerateFiles(current);
+                directories = Directory.EnumerateDirectories(current, "*", ScanEnumerationOptions).ToArray();
+                files = Directory.EnumerateFiles(current, "*", ScanEnumerationOptions).ToArray();
             }
-            catch
+            catch (Exception ex)
             {
+                AppDiagnostics.LogException(ex, $"scan directory {current}");
                 continue;
             }
 
             foreach (var directory in directories)
             {
+                if (!ShouldDescendDirectory(directory))
+                {
+                    continue;
+                }
+
                 pending.Push(directory);
             }
 
@@ -93,6 +112,48 @@ public sealed class AppScanner
                     yield return file;
                 }
             }
+        }
+    }
+
+    private static bool SafeDirectoryExists(string path)
+    {
+        try
+        {
+            return Directory.Exists(path);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"check directory {path}");
+            return false;
+        }
+    }
+
+    private static bool ShouldDescendDirectory(string path)
+    {
+        try
+        {
+            return !File.GetAttributes(path).HasFlag(FileAttributes.ReparsePoint);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"read directory attributes {path}");
+            return false;
+        }
+    }
+
+    private static string NormalizeDirectory(string path)
+    {
+        try
+        {
+            var fullPath = Path.GetFullPath(path);
+            var root = Path.GetPathRoot(fullPath);
+            return string.Equals(fullPath, root, StringComparison.OrdinalIgnoreCase)
+                ? fullPath
+                : fullPath.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        }
+        catch
+        {
+            return path;
         }
     }
 }

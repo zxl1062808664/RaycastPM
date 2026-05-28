@@ -9,6 +9,7 @@
         MinHeight="620"
         Background="{StaticResource AppBackgroundBrush}"
         WindowStartupLocation="CenterScreen"
+        Icon="Assets/AppIcon.ico"
         WindowStyle="None"
         ResizeMode="NoResize">
     <Window.Resources>
@@ -1214,9 +1215,10 @@
                             <Grid>
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="64" />
+                                    <RowDefinition Height="64" />
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="170" />
+                                    <ColumnDefinition Width="280" />
                                     <ColumnDefinition Width="120" />
                                     <ColumnDefinition Width="*" />
                                 </Grid.ColumnDefinitions>
@@ -1232,6 +1234,35 @@
                                               VerticalAlignment="Center"
                                               Style="{StaticResource ToolbarToggleButtonStyle}"
                                               IsChecked="{Binding StartWithWindows, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                    <TextBlock>
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="关闭" />
+                                                <Setter Property="Foreground" Value="{StaticResource SettingsTextBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Text" Value="开启" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </ToggleButton>
+
+                                <Border Grid.Row="1" Grid.ColumnSpan="3" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
+                                <TextBlock Grid.Row="1"
+                                           Text="每天首次启动自动扫描"
+                                           FontSize="17"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Margin="14,0,0,0" />
+                                <ToggleButton Grid.Row="1"
+                                              Grid.Column="1"
+                                              Width="84"
+                                              HorizontalAlignment="Left"
+                                              VerticalAlignment="Center"
+                                              Style="{StaticResource ToolbarToggleButtonStyle}"
+                                              IsChecked="{Binding AutoScanOnDailyFirstLaunch, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
                                     <TextBlock>
                                         <TextBlock.Style>
                                             <Style TargetType="TextBlock">

@@ -8,5 +8,12 @@
     <ImplicitUsings>enable</ImplicitUsings>
     <AssemblyName>RaycastPM</AssemblyName>
     <RootNamespace>RaycastPM</RootNamespace>
+    <ApplicationIcon>Assets\AppIcon.ico</ApplicationIcon>
   </PropertyGroup>
+  <ItemGroup>
+    <Content Include="Assets\AppIcon.ico" CopyToOutputDirectory="PreserveNewest" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="MemoryPack" Version="1.21.4" />
+  </ItemGroup>
 </Project>

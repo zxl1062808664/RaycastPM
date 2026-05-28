@@ -1,21 +1,32 @@
 using System.Collections.Concurrent;
+using System.Buffers;
 using System.IO;
 using System.Text;
 using System.Text.Json;
-using System.Text.Json.Serialization;
 using System.Text.RegularExpressions;
+using MemoryPack;
 using RaycastPM.Models;
 
 namespace RaycastPM.Services;
 
 public sealed partial class LocalFileSearchService
 {
-    private const int CacheVersion = 1;
+    private const int JsonCacheVersion = 1;
+    private const int BinaryCacheVersion = 2;
+    private const int LegacyMemoryPackCacheVersion = 3;
+    private const int CompactMemoryPackCacheVersion = 4;
+    private const int MemoryPackCacheVersion = 5;
+    private const int CacheFileBufferSize = 1024 * 1024;
+    private const string BinaryCacheMagic = "RPMIDX2";
     private const string AppKind = "应用";
     private const string FileKind = "文件";
     private const string FolderKind = "文件夹";
 
     private static readonly string[] LaunchableExtensions = [".exe", ".lnk", ".appref-ms"];
+    private static readonly byte[] JsonVersionProperty = Encoding.UTF8.GetBytes("Version");
+    private static readonly byte[] JsonItemsProperty = Encoding.UTF8.GetBytes("Items");
+    private static readonly byte[] JsonPathProperty = Encoding.UTF8.GetBytes("Path");
+    private static readonly byte[] JsonIsDirectoryProperty = Encoding.UTF8.GetBytes("IsDirectory");
 
     private static readonly EnumerationOptions IndexEnumerationOptions = new()
     {
@@ -43,8 +54,17 @@ public sealed partial class LocalFileSearchService
         };
 
     private readonly ConcurrentDictionary<string, IndexedFileItem> _index = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>> _nameCharacterIndex = new();
+    private readonly ConcurrentDictionary<NameGram, ConcurrentBag<IndexedFileItem>> _nameTrigramIndex = new();
     private readonly object _indexStartLock = new();
-    private readonly string _cachePath;
+    private readonly string _jsonCachePath;
+    private readonly string _memoryPackCachePath;
+    private readonly string _compactMemoryPackCachePath;
+    private readonly string _legacyMemoryPackCachePath;
+    private readonly string _binaryCachePath;
+    private IndexedFileItem[] _itemsSnapshot = [];
+    private IReadOnlyDictionary<char, IndexedFileItem[]> _cachedNameCharacterIndex = new Dictionary<char, IndexedFileItem[]>();
+    private IReadOnlyDictionary<NameGram, IndexedFileItem[]> _cachedNameTrigramIndex = new Dictionary<NameGram, IndexedFileItem[]>();
     private CancellationTokenSource _indexCancellation = new();
     private Task? _indexTask;
     private int _indexedCount;
@@ -53,47 +73,501 @@ public sealed partial class LocalFileSearchService
     private int _directoriesScanned;
     private int _directoriesQueued;
     private int _skippedCount;
+    private long _cacheBytesRead;
+    private long _cacheBytesTotal;
     private string _currentRoot = string.Empty;
     private bool _isIndexing;
+    private bool _isLoadingCache;
 
     public LocalFileSearchService(string cacheFolder)
     {
         Directory.CreateDirectory(cacheFolder);
-        _cachePath = Path.Combine(cacheFolder, "file-index-cache.json");
+        _jsonCachePath = Path.Combine(cacheFolder, "file-index-cache.json");
+        _memoryPackCachePath = Path.Combine(cacheFolder, "file-index-cache-v3.mpack");
+        _compactMemoryPackCachePath = Path.Combine(cacheFolder, "file-index-cache-v2.mpack");
+        _legacyMemoryPackCachePath = Path.Combine(cacheFolder, "file-index-cache.mpack");
+        _binaryCachePath = Path.Combine(cacheFolder, "file-index-cache.bin");
     }
 
-    public bool IsIndexing => _isIndexing;
+    public bool IsIndexing => _isIndexing || _isLoadingCache;
     public int IndexedCount => Volatile.Read(ref _indexedCount);
+
+    public Task<bool> LoadCacheAsync(CancellationToken cancellationToken)
+    {
+        return Task.Run(() => LoadCache(cancellationToken), cancellationToken);
+    }
 
     public bool LoadCache()
     {
-        if (!File.Exists(_cachePath))
+        return LoadCache(CancellationToken.None);
+    }
+
+    private bool LoadCache(CancellationToken cancellationToken)
+    {
+        if (!File.Exists(_memoryPackCachePath)
+            && !File.Exists(_compactMemoryPackCachePath)
+            && !File.Exists(_legacyMemoryPackCachePath)
+            && !File.Exists(_binaryCachePath)
+            && !File.Exists(_jsonCachePath))
         {
             return false;
         }
 
         try
         {
-            using var stream = File.OpenRead(_cachePath);
-            var cache = JsonSerializer.Deserialize<FileIndexCache>(stream);
-            if (cache?.Version != CacheVersion || cache.Items.Count == 0)
+            _isLoadingCache = true;
+            _currentRoot = "本地索引缓存";
+            if (File.Exists(_memoryPackCachePath) && TryLoadMemoryPackCache(cancellationToken))
+            {
+                return true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(_compactMemoryPackCachePath) && TryLoadCompactMemoryPackCache(cancellationToken))
+            {
+                QueueCacheSave();
+                return true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(_legacyMemoryPackCachePath) && TryLoadLegacyMemoryPackCache(cancellationToken))
+            {
+                QueueCacheSave();
+                return true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(_binaryCachePath) && TryLoadLegacyBinaryCache(cancellationToken))
+            {
+                QueueCacheSave();
+                return true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(_jsonCachePath) && TryLoadJsonCache(cancellationToken))
+            {
+                QueueCacheSave();
+                return true;
+            }
+
+            return false;
+        }
+        catch (OperationCanceledException)
+        {
+            return false;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "load file index cache");
+            ClearIndex();
+            return false;
+        }
+        finally
+        {
+            _currentRoot = string.Empty;
+            _isLoadingCache = false;
+        }
+    }
+
+    private void PrepareCacheProgress(string cachePath)
+    {
+        Interlocked.Exchange(ref _cacheBytesRead, 0);
+        Interlocked.Exchange(ref _cacheBytesTotal, File.Exists(cachePath) ? new FileInfo(cachePath).Length : 0);
+        Interlocked.Exchange(ref _indexedCount, 0);
+    }
+
+    private bool TryLoadMemoryPackCache(CancellationToken cancellationToken)
+    {
+        try
+        {
+            PrepareCacheProgress(_memoryPackCachePath);
+            using var stream = new FileStream(
+                _memoryPackCachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                CacheFileBufferSize,
+                FileOptions.SequentialScan);
+            using var progressStream = new ProgressReadStream(stream, bytesRead => Interlocked.Add(ref _cacheBytesRead, bytesRead));
+            var cache = MemoryPackSerializer
+                .DeserializeAsync<MemoryPackedFileIndexCache>(progressStream, cancellationToken: cancellationToken)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (cache?.Version != MemoryPackCacheVersion
+                || cache.Directories is not { Length: > 0 }
+                || cache.Items is not { Length: > 0 })
             {
                 return false;
             }
 
-            _index.Clear();
+            var items = new List<IndexedFileItem>(cache.Items.Length);
             foreach (var item in cache.Items)
             {
-                AddToIndex(item.Path, item.IsDirectory);
+                cancellationToken.ThrowIfCancellationRequested();
+                if ((uint)item.DirectoryIndex >= (uint)cache.Directories.Length || string.IsNullOrWhiteSpace(item.Name))
+                {
+                    continue;
+                }
+
+                items.Add(CreateIndexedFileItem(CombineCachedPath(cache.Directories[item.DirectoryIndex], item.Name), item.IsDirectory));
+                if ((items.Count & 0x3FF) == 0)
+                {
+                    Interlocked.Exchange(ref _indexedCount, items.Count);
+                }
             }
 
-            Interlocked.Exchange(ref _indexedCount, _index.Count);
-            return _index.Count > 0;
+            ReplaceCachedIndex(items);
+            return IndexedCount > 0;
         }
-        catch
+        catch (OperationCanceledException)
         {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load file index cache {Path.GetFileName(_memoryPackCachePath)}");
+            ClearIndex();
             return false;
         }
+    }
+
+    private bool TryLoadCompactMemoryPackCache(CancellationToken cancellationToken)
+    {
+        try
+        {
+            PrepareCacheProgress(_compactMemoryPackCachePath);
+            using var stream = new FileStream(
+                _compactMemoryPackCachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                CacheFileBufferSize,
+                FileOptions.SequentialScan);
+            using var progressStream = new ProgressReadStream(stream, bytesRead => Interlocked.Add(ref _cacheBytesRead, bytesRead));
+            var cache = MemoryPackSerializer
+                .DeserializeAsync<CompactMemoryPackedFileIndexCache>(progressStream, cancellationToken: cancellationToken)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (cache?.Version != CompactMemoryPackCacheVersion || cache.Items is not { Length: > 0 })
+            {
+                return false;
+            }
+
+            var items = new List<IndexedFileItem>(cache.Items.Length);
+            foreach (var item in cache.Items)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!string.IsNullOrWhiteSpace(item.Path))
+                {
+                    items.Add(CreateIndexedFileItem(item.Path, item.IsDirectory));
+                    if ((items.Count & 0x3FF) == 0)
+                    {
+                        Interlocked.Exchange(ref _indexedCount, items.Count);
+                    }
+                }
+            }
+
+            ReplaceCachedIndex(items);
+            return IndexedCount > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load file index cache {Path.GetFileName(_compactMemoryPackCachePath)}");
+            ClearIndex();
+            return false;
+        }
+    }
+
+    private bool TryLoadLegacyMemoryPackCache(CancellationToken cancellationToken)
+    {
+        try
+        {
+            PrepareCacheProgress(_legacyMemoryPackCachePath);
+            using var stream = new FileStream(
+                _legacyMemoryPackCachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                CacheFileBufferSize,
+                FileOptions.SequentialScan);
+            using var progressStream = new ProgressReadStream(stream, bytesRead => Interlocked.Add(ref _cacheBytesRead, bytesRead));
+            var cache = MemoryPackSerializer
+                .DeserializeAsync<LegacyMemoryPackedFileIndexCache>(progressStream, cancellationToken: cancellationToken)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            cancellationToken.ThrowIfCancellationRequested();
+            if (cache?.Version != LegacyMemoryPackCacheVersion || cache.Items is not { Length: > 0 })
+            {
+                return false;
+            }
+
+            var items = new List<IndexedFileItem>(cache.Items.Length);
+            foreach (var item in cache.Items)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (!string.IsNullOrWhiteSpace(item.Path))
+                {
+                    items.Add(item.ToIndexedFileItem());
+                    if ((items.Count & 0x3FF) == 0)
+                    {
+                        Interlocked.Exchange(ref _indexedCount, items.Count);
+                    }
+                }
+            }
+
+            ReplaceCachedIndex(items);
+            return IndexedCount > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load file index cache {Path.GetFileName(_legacyMemoryPackCachePath)}");
+            ClearIndex();
+            return false;
+        }
+    }
+
+    private bool TryLoadLegacyBinaryCache(CancellationToken cancellationToken)
+    {
+        try
+        {
+            PrepareCacheProgress(_binaryCachePath);
+            using var stream = new FileStream(
+                _binaryCachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                CacheFileBufferSize,
+                FileOptions.SequentialScan);
+            using var reader = new BinaryReader(stream, Encoding.UTF8);
+
+            if (reader.ReadString() != BinaryCacheMagic || reader.ReadInt32() != BinaryCacheVersion)
+            {
+                return false;
+            }
+
+            _ = reader.ReadInt64();
+            var itemCount = reader.ReadInt32();
+            if (itemCount <= 0)
+            {
+                return false;
+            }
+
+            var items = new IndexedFileItem[itemCount];
+            for (var index = 0; index < itemCount; index++)
+            {
+                if ((index & 0x3FF) == 0)
+                {
+                    Interlocked.Exchange(ref _cacheBytesRead, stream.Position);
+                    Interlocked.Exchange(ref _indexedCount, index);
+                    cancellationToken.ThrowIfCancellationRequested();
+                }
+
+                items[index] = new IndexedFileItem(
+                    reader.ReadString(),
+                    reader.ReadString(),
+                    reader.ReadString(),
+                    reader.ReadString(),
+                    reader.ReadString(),
+                    reader.ReadBoolean(),
+                    reader.ReadBoolean(),
+                    reader.ReadString(),
+                    reader.ReadString(),
+                    reader.ReadString(),
+                    reader.ReadString());
+            }
+
+            Interlocked.Exchange(ref _cacheBytesRead, stream.Position);
+            ReplaceCachedIndex(items);
+            return IndexedCount > 0;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load file index cache {Path.GetFileName(_binaryCachePath)}");
+            ClearIndex();
+            return false;
+        }
+    }
+
+    private bool TryLoadJsonCache(CancellationToken cancellationToken)
+    {
+        try
+        {
+            PrepareCacheProgress(_jsonCachePath);
+            using var stream = new FileStream(
+                _jsonCachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                CacheFileBufferSize,
+                FileOptions.SequentialScan);
+
+            var buffer = ArrayPool<byte>.Shared.Rent(CacheFileBufferSize);
+            var bytesInBuffer = 0;
+            var isFinalBlock = false;
+            var readerState = new JsonReaderState();
+            var currentProperty = JsonCacheProperty.None;
+            var version = 0;
+            var hasVersion = false;
+            var inItems = false;
+            var inItem = false;
+            var itemPath = string.Empty;
+            var itemIsDirectory = false;
+            var items = new List<IndexedFileItem>();
+
+            try
+            {
+                while (!isFinalBlock)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var bytesRead = stream.Read(buffer.AsSpan(bytesInBuffer));
+                    isFinalBlock = bytesRead == 0;
+                    Interlocked.Exchange(ref _cacheBytesRead, stream.Position);
+
+                    var reader = new Utf8JsonReader(buffer.AsSpan(0, bytesInBuffer + bytesRead), isFinalBlock, readerState);
+                    while (reader.Read())
+                    {
+                        switch (reader.TokenType)
+                        {
+                            case JsonTokenType.PropertyName:
+                                currentProperty = ReadJsonCacheProperty(ref reader);
+                                break;
+
+                            case JsonTokenType.Number when currentProperty == JsonCacheProperty.Version:
+                                hasVersion = reader.TryGetInt32(out version);
+                                if (hasVersion && version != JsonCacheVersion)
+                                {
+                                    ClearIndex();
+                                    return false;
+                                }
+
+                                break;
+
+                            case JsonTokenType.StartArray when currentProperty == JsonCacheProperty.Items:
+                                if (hasVersion && version != JsonCacheVersion)
+                                {
+                                    ClearIndex();
+                                    return false;
+                                }
+
+                                ClearIndex();
+                                items.Clear();
+                                inItems = true;
+                                break;
+
+                            case JsonTokenType.EndArray when inItems:
+                                inItems = false;
+                                break;
+
+                            case JsonTokenType.StartObject when inItems:
+                                inItem = true;
+                                itemPath = string.Empty;
+                                itemIsDirectory = false;
+                                break;
+
+                            case JsonTokenType.EndObject when inItem:
+                                if (!string.IsNullOrWhiteSpace(itemPath))
+                                {
+                                    items.Add(CreateIndexedFileItem(itemPath, itemIsDirectory));
+                                }
+
+                                inItem = false;
+                                if ((items.Count & 0x3FF) == 0)
+                                {
+                                    Interlocked.Exchange(ref _indexedCount, items.Count);
+                                    cancellationToken.ThrowIfCancellationRequested();
+                                }
+
+                                break;
+
+                            case JsonTokenType.String when inItem && currentProperty == JsonCacheProperty.Path:
+                                itemPath = reader.GetString() ?? string.Empty;
+                                break;
+
+                            case JsonTokenType.True or JsonTokenType.False when inItem && currentProperty == JsonCacheProperty.IsDirectory:
+                                itemIsDirectory = reader.GetBoolean();
+                                break;
+                        }
+                    }
+
+                    readerState = reader.CurrentState;
+                    var totalBytes = bytesInBuffer + bytesRead;
+                    var consumedBytes = (int)reader.BytesConsumed;
+                    bytesInBuffer = totalBytes - consumedBytes;
+                    if (bytesInBuffer > 0)
+                    {
+                        Buffer.BlockCopy(buffer, consumedBytes, buffer, 0, bytesInBuffer);
+                    }
+
+                    if (bytesInBuffer == buffer.Length)
+                    {
+                        throw new JsonException("JSON token exceeds cache buffer size.");
+                    }
+                }
+            }
+            finally
+            {
+                ArrayPool<byte>.Shared.Return(buffer);
+            }
+
+            var loaded = hasVersion && version == JsonCacheVersion && items.Count > 0;
+            if (!loaded)
+            {
+                ClearIndex();
+                return false;
+            }
+
+            ReplaceCachedIndex(items);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load file index cache {Path.GetFileName(_jsonCachePath)}");
+            ClearIndex();
+            return false;
+        }
+    }
+
+    private static JsonCacheProperty ReadJsonCacheProperty(ref Utf8JsonReader reader)
+    {
+        if (reader.ValueTextEquals(JsonVersionProperty))
+        {
+            return JsonCacheProperty.Version;
+        }
+
+        if (reader.ValueTextEquals(JsonItemsProperty))
+        {
+            return JsonCacheProperty.Items;
+        }
+
+        if (reader.ValueTextEquals(JsonPathProperty))
+        {
+            return JsonCacheProperty.Path;
+        }
+
+        return reader.ValueTextEquals(JsonIsDirectoryProperty)
+            ? JsonCacheProperty.IsDirectory
+            : JsonCacheProperty.None;
     }
 
     public LocalFileIndexProgress GetProgress()
@@ -106,7 +580,10 @@ public sealed partial class LocalFileSearchService
             Volatile.Read(ref _directoriesScanned),
             Volatile.Read(ref _directoriesQueued),
             Volatile.Read(ref _skippedCount),
-            _currentRoot);
+            _currentRoot,
+            _isLoadingCache,
+            Volatile.Read(ref _cacheBytesRead),
+            Volatile.Read(ref _cacheBytesTotal));
     }
 
     public void StartIndexing()
@@ -139,8 +616,7 @@ public sealed partial class LocalFileSearchService
 
             _indexCancellation.Dispose();
             _indexCancellation = new CancellationTokenSource();
-            _index.Clear();
-            Interlocked.Exchange(ref _indexedCount, 0);
+            ClearIndex();
             Interlocked.Exchange(ref _rootsTotal, 0);
             Interlocked.Exchange(ref _rootsCompleted, 0);
             Interlocked.Exchange(ref _directoriesScanned, 0);
@@ -165,20 +641,21 @@ public sealed partial class LocalFileSearchService
         var results = await Task.Run(() =>
         {
             cancellationToken.ThrowIfCancellationRequested();
-            return SearchIndex(expression, maxResults, cancellationToken);
+            return SearchIndex(expression, trimmedQuery, maxResults, cancellationToken);
         }, cancellationToken);
 
         return new LocalFileSearchResponse(results, IsIndexing, IndexedCount);
     }
 
-    private LauncherSearchResult[] SearchIndex(ISearchNode expression, int maxResults, CancellationToken cancellationToken)
+    private LauncherSearchResult[] SearchIndex(ISearchNode expression, string query, int maxResults, CancellationToken cancellationToken)
     {
-        var capacity = Math.Max(maxResults * 3, maxResults);
+        var capacity = Math.Max(maxResults * 10, maxResults);
+        var items = TryGetFastNameCandidates(query) ?? GetSearchItems();
         var candidates = new List<ScoredFileItem>(capacity);
         var lowestScore = 0;
         var scanned = 0;
 
-        foreach (var item in _index.Values)
+        foreach (var item in items)
         {
             if ((++scanned & 0x3FF) == 0)
             {
@@ -226,6 +703,12 @@ public sealed partial class LocalFileSearchService
             .ToArray();
     }
 
+    private IEnumerable<IndexedFileItem> GetSearchItems()
+    {
+        var snapshot = _itemsSnapshot;
+        return snapshot.Length > 0 ? snapshot : _index.Values;
+    }
+
     private static int CompareScoredItems(ScoredFileItem left, ScoredFileItem right)
     {
         var compare = right.Score.CompareTo(left.Score);
@@ -265,6 +748,10 @@ public sealed partial class LocalFileSearchService
         catch (OperationCanceledException)
         {
         }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "build file index");
+        }
         finally
         {
             _currentRoot = string.Empty;
@@ -280,30 +767,85 @@ public sealed partial class LocalFileSearchService
     {
         try
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_cachePath)!);
-            var cache = new FileIndexCache(
-                CacheVersion,
-                DateTimeOffset.Now,
-                _index.Values
-                    .Select(item => new CachedFileIndexItem(item.Path, item.IsDirectory))
-                    .ToList());
+            Directory.CreateDirectory(Path.GetDirectoryName(_memoryPackCachePath)!);
+            var tempPath = $"{_memoryPackCachePath}.tmp";
+            TryDeleteFile(tempPath);
+            var cache = CreateMemoryPackCache();
 
-            var tempPath = $"{_cachePath}.tmp";
-            using (var stream = File.Create(tempPath))
+            using (var stream = new FileStream(
+                       tempPath,
+                       FileMode.CreateNew,
+                       FileAccess.Write,
+                       FileShare.None,
+                       CacheFileBufferSize,
+                       FileOptions.SequentialScan))
             {
-                JsonSerializer.Serialize(stream, cache);
+                MemoryPackSerializer
+                    .SerializeAsync(stream, cache)
+                    .AsTask()
+                    .GetAwaiter()
+                    .GetResult();
             }
 
-            if (File.Exists(_cachePath))
+            if (File.Exists(_memoryPackCachePath))
             {
-                File.Delete(_cachePath);
+                File.Delete(_memoryPackCachePath);
             }
 
-            File.Move(tempPath, _cachePath);
+            File.Move(tempPath, _memoryPackCachePath);
+            TryDeleteFile(_compactMemoryPackCachePath);
+            TryDeleteFile(_legacyMemoryPackCachePath);
+            TryDeleteFile(_binaryCachePath);
+            TryDeleteFile(_jsonCachePath);
         }
-        catch
+        catch (Exception ex)
         {
+            AppDiagnostics.LogException(ex, "save file index cache");
         }
+    }
+
+    private void QueueCacheSave()
+    {
+        _ = Task.Run(SaveCache);
+    }
+
+    private MemoryPackedFileIndexCache CreateMemoryPackCache()
+    {
+        var directoryIds = new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
+        var directories = new List<string>();
+        var items = new List<MemoryPackedFileIndexItem>();
+
+        foreach (var item in GetSearchItems())
+        {
+            var name = DisplayName(item.Path);
+            if (string.IsNullOrWhiteSpace(name))
+            {
+                continue;
+            }
+
+            var directory = Path.GetDirectoryName(item.Path) ?? string.Empty;
+            if (!directoryIds.TryGetValue(directory, out var directoryIndex))
+            {
+                directoryIndex = directories.Count;
+                directories.Add(directory);
+                directoryIds.Add(directory, directoryIndex);
+            }
+
+            items.Add(new MemoryPackedFileIndexItem
+            {
+                DirectoryIndex = directoryIndex,
+                Name = name,
+                IsDirectory = item.IsDirectory
+            });
+        }
+
+        return new MemoryPackedFileIndexCache
+        {
+            Version = MemoryPackCacheVersion,
+            UpdatedAtUnixMilliseconds = DateTimeOffset.Now.ToUnixTimeMilliseconds(),
+            Directories = directories.ToArray(),
+            Items = items.ToArray()
+        };
     }
 
     private void IndexRoot(string root, CancellationToken cancellationToken)
@@ -368,6 +910,11 @@ public sealed partial class LocalFileSearchService
 
     private void AddToIndex(string path, bool isDirectory)
     {
+        AddCachedItem(CreateIndexedFileItem(path, isDirectory));
+    }
+
+    private static IndexedFileItem CreateIndexedFileItem(string path, bool isDirectory)
+    {
         var kind = ItemKind(path, isDirectory);
         var fileName = DisplayName(path);
         var name = kind == AppKind ? Path.GetFileNameWithoutExtension(path) : fileName;
@@ -377,7 +924,7 @@ public sealed partial class LocalFileSearchService
             nameWithoutExtension = name;
         }
 
-        var item = new IndexedFileItem(
+        return new IndexedFileItem(
             name,
             fileName,
             path,
@@ -389,26 +936,314 @@ public sealed partial class LocalFileSearchService
             name.ToLowerInvariant(),
             fileName.ToLowerInvariant(),
             nameWithoutExtension.ToLowerInvariant());
+    }
 
-        if (_index.TryAdd(path, item))
+    private void AddCachedItem(IndexedFileItem item)
+    {
+        if (_index.TryAdd(item.Path, item))
         {
+            AddToNameTrigramIndex(item);
             Interlocked.Increment(ref _indexedCount);
+        }
+    }
+
+    private void ReplaceCachedIndex(IReadOnlyCollection<IndexedFileItem> items)
+    {
+        ClearIndex();
+        if (items.Count == 0)
+        {
+            return;
+        }
+
+        var itemArray = items as IndexedFileItem[] ?? items.ToArray();
+        var characterIndex = new Dictionary<char, List<IndexedFileItem>>();
+        var trigramIndex = new Dictionary<NameGram, List<IndexedFileItem>>();
+
+        foreach (var item in itemArray)
+        {
+            AddToNameLookupBuilders(item, characterIndex, trigramIndex);
+        }
+
+        _cachedNameCharacterIndex = characterIndex.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.ToArray());
+        _cachedNameTrigramIndex = trigramIndex.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.ToArray());
+        _itemsSnapshot = itemArray;
+        Interlocked.Exchange(ref _indexedCount, itemArray.Length);
+    }
+
+    private void ClearIndex()
+    {
+        _index.Clear();
+        _nameCharacterIndex.Clear();
+        _nameTrigramIndex.Clear();
+        _itemsSnapshot = [];
+        _cachedNameCharacterIndex = new Dictionary<char, IndexedFileItem[]>();
+        _cachedNameTrigramIndex = new Dictionary<NameGram, IndexedFileItem[]>();
+        Interlocked.Exchange(ref _indexedCount, 0);
+    }
+
+    private static void TryDeleteFile(string path)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+            }
+        }
+        catch
+        {
+        }
+    }
+
+    private IEnumerable<IndexedFileItem>? TryGetFastNameCandidates(string query)
+    {
+        if (!TryGetSimpleNameTerms(query, out var terms))
+        {
+            return null;
+        }
+
+        var cachedCharacterIndex = _cachedNameCharacterIndex;
+        if (cachedCharacterIndex.Count > 0)
+        {
+            return TryGetFastNameCandidates(terms, cachedCharacterIndex, _cachedNameTrigramIndex);
+        }
+
+        return TryGetFastNameCandidates(terms, _nameCharacterIndex, _nameTrigramIndex);
+    }
+
+    private static IEnumerable<IndexedFileItem>? TryGetFastNameCandidates<TCharacterCandidates, TTrigramCandidates>(
+        string[] terms,
+        IReadOnlyDictionary<char, TCharacterCandidates> characterIndex,
+        IReadOnlyDictionary<NameGram, TTrigramCandidates> trigramIndex)
+        where TCharacterCandidates : IReadOnlyCollection<IndexedFileItem>
+        where TTrigramCandidates : IReadOnlyCollection<IndexedFileItem>
+    {
+        var seen = new HashSet<NameGram>();
+        var seenCharacters = new HashSet<char>();
+        IReadOnlyCollection<IndexedFileItem>? bestCandidates = null;
+        var bestCount = int.MaxValue;
+
+        foreach (var term in terms)
+        {
+            var normalized = term.ToLowerInvariant();
+            foreach (var ch in normalized)
+            {
+                if (!seenCharacters.Add(ch))
+                {
+                    continue;
+                }
+
+                if (!characterIndex.TryGetValue(ch, out var characterCandidates))
+                {
+                    return Array.Empty<IndexedFileItem>();
+                }
+
+                UpdateBestCandidates(characterCandidates, ref bestCandidates, ref bestCount);
+            }
+
+            if (normalized.Length < 3)
+            {
+                continue;
+            }
+
+            for (var index = 0; index <= normalized.Length - 3; index++)
+            {
+                var gram = new NameGram(normalized[index], normalized[index + 1], normalized[index + 2]);
+                if (!seen.Add(gram))
+                {
+                    continue;
+                }
+
+                if (!trigramIndex.TryGetValue(gram, out var candidates))
+                {
+                    return Array.Empty<IndexedFileItem>();
+                }
+
+                UpdateBestCandidates(candidates, ref bestCandidates, ref bestCount);
+            }
+        }
+
+        return bestCandidates;
+    }
+
+    private static void UpdateBestCandidates(
+        IReadOnlyCollection<IndexedFileItem> candidates,
+        ref IReadOnlyCollection<IndexedFileItem>? bestCandidates,
+        ref int bestCount)
+    {
+        var count = candidates.Count;
+        if (count < bestCount)
+        {
+            bestCandidates = candidates;
+            bestCount = count;
+        }
+    }
+
+    private static bool TryGetSimpleNameTerms(string query, out string[] terms)
+    {
+        terms = [];
+        if (string.IsNullOrWhiteSpace(query))
+        {
+            return false;
+        }
+
+        foreach (var ch in query)
+        {
+            if (ch is '|' or '!' or '<' or '>' or ':' or '\\' or '/' or '*' or '?' or '"')
+            {
+                return false;
+            }
+        }
+
+        terms = query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+        return terms.Length > 0;
+    }
+
+    private static void AddToNameLookupBuilders(
+        IndexedFileItem item,
+        Dictionary<char, List<IndexedFileItem>> characterIndex,
+        Dictionary<NameGram, List<IndexedFileItem>> trigramIndex)
+    {
+        HashSet<char>? characters = null;
+        AddNameCharacterKeys(item.SearchName, ref characters);
+        AddNameCharacterKeys(item.SearchFileName, ref characters);
+        AddNameCharacterKeys(item.SearchNameWithoutExtension, ref characters);
+        if (characters is not null)
+        {
+            foreach (var character in characters)
+            {
+                AddToListIndex(characterIndex, character, item);
+            }
+        }
+
+        HashSet<NameGram>? keys = null;
+        AddNameTrigramKeys(item.SearchName, ref keys);
+        AddNameTrigramKeys(item.SearchFileName, ref keys);
+        AddNameTrigramKeys(item.SearchNameWithoutExtension, ref keys);
+        if (keys is null)
+        {
+            return;
+        }
+
+        foreach (var key in keys)
+        {
+            AddToListIndex(trigramIndex, key, item);
+        }
+    }
+
+    private static void AddToListIndex<TKey>(
+        Dictionary<TKey, List<IndexedFileItem>> index,
+        TKey key,
+        IndexedFileItem item)
+        where TKey : notnull
+    {
+        if (!index.TryGetValue(key, out var items))
+        {
+            items = [];
+            index.Add(key, items);
+        }
+
+        items.Add(item);
+    }
+
+    private void AddToNameTrigramIndex(IndexedFileItem item)
+    {
+        HashSet<char>? characters = null;
+        AddNameCharacterKeys(item.SearchName, ref characters);
+        AddNameCharacterKeys(item.SearchFileName, ref characters);
+        AddNameCharacterKeys(item.SearchNameWithoutExtension, ref characters);
+        if (characters is not null)
+        {
+            foreach (var character in characters)
+            {
+                _nameCharacterIndex.GetOrAdd(character, static _ => new ConcurrentBag<IndexedFileItem>()).Add(item);
+            }
+        }
+
+        HashSet<NameGram>? keys = null;
+        AddNameTrigramKeys(item.SearchName, ref keys);
+        AddNameTrigramKeys(item.SearchFileName, ref keys);
+        AddNameTrigramKeys(item.SearchNameWithoutExtension, ref keys);
+        if (keys is null)
+        {
+            return;
+        }
+
+        foreach (var key in keys)
+        {
+            _nameTrigramIndex.GetOrAdd(key, static _ => new ConcurrentBag<IndexedFileItem>()).Add(item);
+        }
+    }
+
+    private static void AddNameCharacterKeys(string text, ref HashSet<char>? keys)
+    {
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        keys ??= [];
+        foreach (var ch in text)
+        {
+            keys.Add(ch);
+        }
+    }
+
+    private static void AddNameTrigramKeys(string text, ref HashSet<NameGram>? keys)
+    {
+        if (text.Length < 3)
+        {
+            return;
+        }
+
+        keys ??= [];
+        for (var index = 0; index <= text.Length - 3; index++)
+        {
+            keys.Add(new NameGram(text[index], text[index + 1], text[index + 2]));
         }
     }
 
     private static IEnumerable<string> SearchRoots()
     {
-        foreach (var drive in DriveInfo.GetDrives())
+        DriveInfo[] drives;
+        try
         {
-            if (!drive.IsReady)
+            drives = DriveInfo.GetDrives();
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "get search roots");
+            yield break;
+        }
+
+        foreach (var drive in drives)
+        {
+            string root;
+            try
             {
+                if (!drive.IsReady)
+                {
+                    continue;
+                }
+
+                if (drive.DriveType is not (DriveType.Fixed or DriveType.Removable or DriveType.Network or DriveType.Ram))
+                {
+                    continue;
+                }
+
+                root = drive.RootDirectory.FullName;
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogException(ex, $"read drive {drive.Name}");
                 continue;
             }
 
-            if (drive.DriveType is DriveType.Fixed or DriveType.Removable or DriveType.Network or DriveType.Ram)
-            {
-                yield return drive.RootDirectory.FullName;
-            }
+            yield return root;
         }
     }
 
@@ -456,6 +1291,11 @@ public sealed partial class LocalFileSearchService
     private static string NormalizePath(string path)
     {
         return path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar).ToLowerInvariant();
+    }
+
+    private static string CombineCachedPath(string directory, string name)
+    {
+        return string.IsNullOrEmpty(directory) ? name : Path.Combine(directory, name);
     }
 
     private static int ScoreText(string text, string term)
@@ -510,6 +1350,158 @@ public sealed partial class LocalFileSearchService
         return new Regex(builder.ToString(), ignoreCase ? RegexOptions.IgnoreCase : RegexOptions.None);
     }
 
+    private sealed class ProgressReadStream(Stream inner, Action<int> onRead) : Stream
+    {
+        public override bool CanRead => inner.CanRead;
+        public override bool CanSeek => inner.CanSeek;
+        public override bool CanWrite => false;
+        public override long Length => inner.Length;
+
+        public override long Position
+        {
+            get => inner.Position;
+            set => inner.Position = value;
+        }
+
+        public override void Flush()
+        {
+            inner.Flush();
+        }
+
+        public override int Read(byte[] buffer, int offset, int count)
+        {
+            var bytesRead = inner.Read(buffer, offset, count);
+            Report(bytesRead);
+            return bytesRead;
+        }
+
+        public override int Read(Span<byte> buffer)
+        {
+            var bytesRead = inner.Read(buffer);
+            Report(bytesRead);
+            return bytesRead;
+        }
+
+        public override async ValueTask<int> ReadAsync(Memory<byte> buffer, CancellationToken cancellationToken = default)
+        {
+            var bytesRead = await inner.ReadAsync(buffer, cancellationToken).ConfigureAwait(false);
+            Report(bytesRead);
+            return bytesRead;
+        }
+
+        public override async Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
+        {
+            var bytesRead = await inner.ReadAsync(buffer.AsMemory(offset, count), cancellationToken).ConfigureAwait(false);
+            Report(bytesRead);
+            return bytesRead;
+        }
+
+        public override long Seek(long offset, SeekOrigin origin)
+        {
+            return inner.Seek(offset, origin);
+        }
+
+        public override void SetLength(long value)
+        {
+            throw new NotSupportedException();
+        }
+
+        public override void Write(byte[] buffer, int offset, int count)
+        {
+            throw new NotSupportedException();
+        }
+
+        protected override void Dispose(bool disposing)
+        {
+            if (disposing)
+            {
+                inner.Dispose();
+            }
+
+            base.Dispose(disposing);
+        }
+
+        private void Report(int bytesRead)
+        {
+            if (bytesRead > 0)
+            {
+                onRead(bytesRead);
+            }
+        }
+    }
+
+    [MemoryPackable]
+    private sealed partial class MemoryPackedFileIndexCache
+    {
+        public int Version { get; set; }
+        public long UpdatedAtUnixMilliseconds { get; set; }
+        public string[] Directories { get; set; } = [];
+        public MemoryPackedFileIndexItem[] Items { get; set; } = [];
+    }
+
+    [MemoryPackable]
+    private sealed partial class MemoryPackedFileIndexItem
+    {
+        public int DirectoryIndex { get; set; }
+        public string Name { get; set; } = string.Empty;
+        public bool IsDirectory { get; set; }
+    }
+
+    [MemoryPackable]
+    private sealed partial class CompactMemoryPackedFileIndexCache
+    {
+        public int Version { get; set; }
+        public long UpdatedAtUnixMilliseconds { get; set; }
+        public CompactMemoryPackedFileIndexItem[] Items { get; set; } = [];
+    }
+
+    [MemoryPackable]
+    private sealed partial class CompactMemoryPackedFileIndexItem
+    {
+        public string Path { get; set; } = string.Empty;
+        public bool IsDirectory { get; set; }
+    }
+
+    [MemoryPackable]
+    private sealed partial class LegacyMemoryPackedFileIndexCache
+    {
+        public int Version { get; set; }
+        public long UpdatedAtUnixMilliseconds { get; set; }
+        public LegacyMemoryPackedFileIndexItem[] Items { get; set; } = [];
+    }
+
+    [MemoryPackable]
+    private sealed partial class LegacyMemoryPackedFileIndexItem
+    {
+        public string Name { get; set; } = string.Empty;
+        public string FileName { get; set; } = string.Empty;
+        public string Path { get; set; } = string.Empty;
+        public string SearchPath { get; set; } = string.Empty;
+        public string Kind { get; set; } = string.Empty;
+        public bool IsDirectory { get; set; }
+        public bool IsApp { get; set; }
+        public string Extension { get; set; } = string.Empty;
+        public string SearchName { get; set; } = string.Empty;
+        public string SearchFileName { get; set; } = string.Empty;
+        public string SearchNameWithoutExtension { get; set; } = string.Empty;
+
+        public IndexedFileItem ToIndexedFileItem()
+        {
+            return new IndexedFileItem(
+                Name,
+                FileName,
+                Path,
+                SearchPath,
+                Kind,
+                IsDirectory,
+                IsApp,
+                Extension,
+                SearchName,
+                SearchFileName,
+                SearchNameWithoutExtension);
+        }
+    }
+
     private sealed record IndexedFileItem(
         string Name,
         string FileName,
@@ -523,16 +1515,9 @@ public sealed partial class LocalFileSearchService
         string SearchFileName,
         string SearchNameWithoutExtension);
 
+    private readonly record struct NameGram(char First, char Second, char Third);
+
     private readonly record struct ScoredFileItem(IndexedFileItem Item, int Score);
-
-    private sealed record FileIndexCache(
-        int Version,
-        DateTimeOffset UpdatedAt,
-        List<CachedFileIndexItem> Items);
-
-    private sealed record CachedFileIndexItem(
-        string Path,
-        bool IsDirectory);
 
     private interface ISearchNode
     {
@@ -728,6 +1713,15 @@ public sealed partial class LocalFileSearchService
     private static bool IsDriveTerm(string text)
     {
         return text.Length >= 2 && char.IsAsciiLetter(text[0]) && text[1] == ':';
+    }
+
+    private enum JsonCacheProperty
+    {
+        None,
+        Version,
+        Items,
+        Path,
+        IsDirectory
     }
 
     private static ISearchNode BuildTermNode(string rawText)
@@ -1057,7 +2051,10 @@ public sealed record LocalFileIndexProgress(
     int DirectoriesScanned,
     int DirectoriesQueued,
     int SkippedCount,
-    string CurrentRoot)
+    string CurrentRoot,
+    bool IsLoadingCache,
+    long CacheBytesRead,
+    long CacheBytesTotal)
 {
     public double CompletionRatio
     {
@@ -1066,6 +2063,16 @@ public sealed record LocalFileIndexProgress(
             if (!IsIndexing)
             {
                 return 1;
+            }
+
+            if (IsLoadingCache)
+            {
+                if (CacheBytesTotal > 0)
+                {
+                    return Math.Clamp(CacheBytesRead / (double)CacheBytesTotal, 0.02, 0.98);
+                }
+
+                return IndexedCount > 0 ? 0.5 : 0.05;
             }
 
             var rootRatio = RootsTotal <= 0 ? 0 : RootsCompleted / (double)RootsTotal;
