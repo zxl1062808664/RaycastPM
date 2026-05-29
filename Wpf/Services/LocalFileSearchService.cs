@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Buffers;
+using System.Diagnostics;
 using System.IO;
 using System.Text;
 using System.Text.Json;
@@ -9,14 +10,18 @@ using RaycastPM.Models;
 
 namespace RaycastPM.Services;
 
-public sealed partial class LocalFileSearchService
+public sealed partial class LocalFileSearchService : IDisposable
 {
     private const int JsonCacheVersion = 1;
     private const int BinaryCacheVersion = 2;
     private const int LegacyMemoryPackCacheVersion = 3;
     private const int CompactMemoryPackCacheVersion = 4;
     private const int MemoryPackCacheVersion = 5;
+    private const int FastMemoryPackCacheVersion = 6;
+    private const int AppMemoryPackCacheVersion = 1;
     private const int CacheFileBufferSize = 1024 * 1024;
+    private const int SingleCharacterCandidateMultiplier = 80;
+    private const int StartPrefixCandidateMultiplier = 120;
     private const string BinaryCacheMagic = "RPMIDX2";
     private const string AppKind = "应用";
     private const string FileKind = "文件";
@@ -53,21 +58,41 @@ public sealed partial class LocalFileSearchService
             ["video"] = [".avi", ".flv", ".m4v", ".mkv", ".mov", ".mp4", ".mpeg", ".mpg", ".webm", ".wmv"]
         };
 
-    private readonly ConcurrentDictionary<string, IndexedFileItem> _index = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>> _nameCharacterIndex = new();
-    private readonly ConcurrentDictionary<NameGram, ConcurrentBag<IndexedFileItem>> _nameTrigramIndex = new();
+    private ConcurrentDictionary<string, IndexedFileItem> _index = new(StringComparer.OrdinalIgnoreCase);
+    private ConcurrentDictionary<string, ConcurrentBag<IndexedFileItem>> _pathRootIndex = new(StringComparer.OrdinalIgnoreCase);
+    private ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>> _nameStartCharacterIndex = new();
+    private ConcurrentDictionary<NameBigram, ConcurrentBag<IndexedFileItem>> _nameStartBigramIndex = new();
+    private ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>> _nameCharacterIndex = new();
+    private ConcurrentDictionary<NameBigram, ConcurrentBag<IndexedFileItem>> _nameBigramIndex = new();
+    private ConcurrentDictionary<NameGram, ConcurrentBag<IndexedFileItem>> _nameTrigramIndex = new();
     private readonly object _indexStartLock = new();
+    private readonly object _watcherLock = new();
+    private readonly object _cacheSaveLock = new();
+    private readonly SemaphoreSlim _searchGate = new(1, 1);
     private readonly string _jsonCachePath;
+    private readonly string _appMemoryPackCachePath;
     private readonly string _memoryPackCachePath;
+    private readonly string _fastMemoryPackCachePath;
     private readonly string _compactMemoryPackCachePath;
     private readonly string _legacyMemoryPackCachePath;
     private readonly string _binaryCachePath;
-    private IndexedFileItem[] _itemsSnapshot = [];
+    private readonly string _ntfsJournalCachePath;
+    private readonly ConcurrentDictionary<string, NtfsVolumeIndex> _ntfsVolumeIndexes = new(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyList<IndexedFileItem> _itemsSnapshot = [];
+    private IReadOnlyDictionary<string, IndexedFileItem[]> _cachedPathRootIndex = new Dictionary<string, IndexedFileItem[]>(StringComparer.OrdinalIgnoreCase);
+    private IReadOnlyDictionary<char, IndexedFileItem[]> _cachedNameStartCharacterIndex = new Dictionary<char, IndexedFileItem[]>();
+    private IReadOnlyDictionary<NameBigram, IndexedFileItem[]> _cachedNameStartBigramIndex = new Dictionary<NameBigram, IndexedFileItem[]>();
     private IReadOnlyDictionary<char, IndexedFileItem[]> _cachedNameCharacterIndex = new Dictionary<char, IndexedFileItem[]>();
+    private IReadOnlyDictionary<NameBigram, IndexedFileItem[]> _cachedNameBigramIndex = new Dictionary<NameBigram, IndexedFileItem[]>();
     private IReadOnlyDictionary<NameGram, IndexedFileItem[]> _cachedNameTrigramIndex = new Dictionary<NameGram, IndexedFileItem[]>();
     private CancellationTokenSource _indexCancellation = new();
     private Task? _indexTask;
+    private List<FileSystemWatcher> _watchers = [];
     private int _indexedCount;
+    private int _cacheSaveQueued;
+    private int _cacheOperationVersion;
+    private int _ntfsJournalUpdateQueued;
+    private int _nameIndexBuildVersion;
     private int _rootsTotal;
     private int _rootsCompleted;
     private int _directoriesScanned;
@@ -78,19 +103,25 @@ public sealed partial class LocalFileSearchService
     private string _currentRoot = string.Empty;
     private bool _isIndexing;
     private bool _isLoadingCache;
+    private bool _isCompletingCacheLoad;
+    private bool _disposed;
 
     public LocalFileSearchService(string cacheFolder)
     {
         Directory.CreateDirectory(cacheFolder);
         _jsonCachePath = Path.Combine(cacheFolder, "file-index-cache.json");
+        _appMemoryPackCachePath = Path.Combine(cacheFolder, "file-index-app-cache-v1.mpack");
+        _fastMemoryPackCachePath = Path.Combine(cacheFolder, "file-index-cache-v4.mpack");
         _memoryPackCachePath = Path.Combine(cacheFolder, "file-index-cache-v3.mpack");
         _compactMemoryPackCachePath = Path.Combine(cacheFolder, "file-index-cache-v2.mpack");
         _legacyMemoryPackCachePath = Path.Combine(cacheFolder, "file-index-cache.mpack");
         _binaryCachePath = Path.Combine(cacheFolder, "file-index-cache.bin");
+        _ntfsJournalCachePath = Path.Combine(cacheFolder, "file-index-ntfs-journal.mpack");
     }
 
     public bool IsIndexing => _isIndexing || _isLoadingCache;
     public int IndexedCount => Volatile.Read(ref _indexedCount);
+    public bool IsCompletingCacheLoad => Volatile.Read(ref _isCompletingCacheLoad);
 
     public Task<bool> LoadCacheAsync(CancellationToken cancellationToken)
     {
@@ -104,12 +135,15 @@ public sealed partial class LocalFileSearchService
 
     private bool LoadCache(CancellationToken cancellationToken)
     {
-        if (!File.Exists(_memoryPackCachePath)
+        if (!File.Exists(_appMemoryPackCachePath)
+            && !File.Exists(_fastMemoryPackCachePath)
+            && !File.Exists(_memoryPackCachePath)
             && !File.Exists(_compactMemoryPackCachePath)
             && !File.Exists(_legacyMemoryPackCachePath)
             && !File.Exists(_binaryCachePath)
             && !File.Exists(_jsonCachePath))
         {
+            AppDiagnostics.LogInfo("local index cache file not found", "index startup");
             return false;
         }
 
@@ -117,14 +151,43 @@ public sealed partial class LocalFileSearchService
         {
             _isLoadingCache = true;
             _currentRoot = "本地索引缓存";
+            if (File.Exists(_appMemoryPackCachePath) && TryLoadAppMemoryPackCache(cancellationToken))
+            {
+                LoadNtfsJournalCache();
+                if (File.Exists(_memoryPackCachePath))
+                {
+                    QueueFullMemoryPackCacheLoadFromFile(_memoryPackCachePath, migrateAfterLoad: false);
+                    AppDiagnostics.LogInfo($"loaded app MemoryPack index cache; apps={IndexedCount:N0}; full cache continues in background", "index startup");
+                }
+                else
+                {
+                    AppDiagnostics.LogInfo($"loaded app MemoryPack index cache; apps={IndexedCount:N0}; full cache missing", "index startup");
+                }
+
+                return true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
             if (File.Exists(_memoryPackCachePath) && TryLoadMemoryPackCache(cancellationToken))
             {
+                LoadNtfsJournalCache();
+                AppDiagnostics.LogInfo($"loaded MemoryPack index cache; count={IndexedCount:N0}", "index startup");
+                return true;
+            }
+
+            cancellationToken.ThrowIfCancellationRequested();
+            if (File.Exists(_fastMemoryPackCachePath) && TryLoadFastMemoryPackCache(cancellationToken))
+            {
+                LoadNtfsJournalCache();
+                AppDiagnostics.LogInfo($"loaded legacy fast full-path cache; count={IndexedCount:N0}; migrate=true", "index startup");
                 return true;
             }
 
             cancellationToken.ThrowIfCancellationRequested();
             if (File.Exists(_compactMemoryPackCachePath) && TryLoadCompactMemoryPackCache(cancellationToken))
             {
+                LoadNtfsJournalCache();
+                AppDiagnostics.LogInfo($"loaded legacy compact index cache; count={IndexedCount:N0}; migrate=true", "index startup");
                 QueueCacheSave();
                 return true;
             }
@@ -132,6 +195,8 @@ public sealed partial class LocalFileSearchService
             cancellationToken.ThrowIfCancellationRequested();
             if (File.Exists(_legacyMemoryPackCachePath) && TryLoadLegacyMemoryPackCache(cancellationToken))
             {
+                LoadNtfsJournalCache();
+                AppDiagnostics.LogInfo($"loaded legacy MemoryPack index cache; count={IndexedCount:N0}; migrate=true", "index startup");
                 QueueCacheSave();
                 return true;
             }
@@ -139,6 +204,8 @@ public sealed partial class LocalFileSearchService
             cancellationToken.ThrowIfCancellationRequested();
             if (File.Exists(_binaryCachePath) && TryLoadLegacyBinaryCache(cancellationToken))
             {
+                LoadNtfsJournalCache();
+                AppDiagnostics.LogInfo($"loaded legacy binary index cache; count={IndexedCount:N0}; migrate=true", "index startup");
                 QueueCacheSave();
                 return true;
             }
@@ -146,10 +213,13 @@ public sealed partial class LocalFileSearchService
             cancellationToken.ThrowIfCancellationRequested();
             if (File.Exists(_jsonCachePath) && TryLoadJsonCache(cancellationToken))
             {
+                LoadNtfsJournalCache();
+                AppDiagnostics.LogInfo($"loaded legacy JSON index cache; count={IndexedCount:N0}; migrate=true", "index startup");
                 QueueCacheSave();
                 return true;
             }
 
+            AppDiagnostics.LogInfo("no usable local index cache", "index startup");
             return false;
         }
         catch (OperationCanceledException)
@@ -164,7 +234,11 @@ public sealed partial class LocalFileSearchService
         }
         finally
         {
-            _currentRoot = string.Empty;
+            if (!Volatile.Read(ref _isCompletingCacheLoad))
+            {
+                _currentRoot = string.Empty;
+            }
+
             _isLoadingCache = false;
         }
     }
@@ -176,10 +250,221 @@ public sealed partial class LocalFileSearchService
         Interlocked.Exchange(ref _indexedCount, 0);
     }
 
+    private bool TryLoadAppMemoryPackCache(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var version = Volatile.Read(ref _cacheOperationVersion);
+            AppDiagnostics.LogInfo("app MemoryPack cache deserialize start", "index startup");
+            PrepareCacheProgress(_appMemoryPackCachePath);
+            using var stream = new FileStream(
+                _appMemoryPackCachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                CacheFileBufferSize,
+                FileOptions.SequentialScan);
+            using var progressStream = new ProgressReadStream(stream, bytesRead => Interlocked.Add(ref _cacheBytesRead, bytesRead));
+            var cache = MemoryPackSerializer
+                .DeserializeAsync<AppMemoryPackedFileIndexCache>(progressStream, cancellationToken: cancellationToken)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            cancellationToken.ThrowIfCancellationRequested();
+            AppDiagnostics.LogInfo(
+                $"app MemoryPack cache deserialize done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; apps={cache?.Items?.Length ?? 0:N0}",
+                "index startup");
+            if (cache?.Version != AppMemoryPackCacheVersion || cache.Items is not { Length: > 0 })
+            {
+                return false;
+            }
+
+            var items = new List<IndexedFileItem>(cache.Items.Length);
+            foreach (var item in cache.Items)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                if (string.IsNullOrWhiteSpace(item.Path))
+                {
+                    continue;
+                }
+
+                items.Add(CreateIndexedFileItem(item.Path, item.IsDirectory));
+                if ((items.Count & 0x3FF) == 0)
+                {
+                    Interlocked.Exchange(ref _indexedCount, items.Count);
+                }
+            }
+
+            if (version != Volatile.Read(ref _cacheOperationVersion))
+            {
+                return false;
+            }
+
+            ReplaceCachedIndex(items);
+            AppDiagnostics.LogInfo(
+                $"app MemoryPack cache load done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; indexed={IndexedCount:N0}",
+                "index startup");
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load file index cache {Path.GetFileName(_appMemoryPackCachePath)}");
+            ClearIndex();
+            return false;
+        }
+    }
+
+    private bool TryLoadFastMemoryPackCache(CancellationToken cancellationToken)
+    {
+        try
+        {
+            var stopwatch = Stopwatch.StartNew();
+            var version = Volatile.Read(ref _cacheOperationVersion);
+            AppDiagnostics.LogInfo("legacy fast full-path cache deserialize start", "index startup");
+            PrepareCacheProgress(_fastMemoryPackCachePath);
+            using var stream = new FileStream(
+                _fastMemoryPackCachePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read,
+                CacheFileBufferSize,
+                FileOptions.SequentialScan);
+            using var progressStream = new ProgressReadStream(stream, bytesRead => Interlocked.Add(ref _cacheBytesRead, bytesRead));
+            var cache = MemoryPackSerializer
+                .DeserializeAsync<FastMemoryPackedFileIndexCache>(progressStream, cancellationToken: cancellationToken)
+                .AsTask()
+                .GetAwaiter()
+                .GetResult();
+            cancellationToken.ThrowIfCancellationRequested();
+            AppDiagnostics.LogInfo(
+                $"legacy fast full-path cache deserialize done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; rawItems={cache?.Items?.Length ?? 0:N0}",
+                "index startup");
+            if (cache?.Version != FastMemoryPackCacheVersion || cache.Items is not { Length: > 0 })
+            {
+                return false;
+            }
+
+            var appItems = MaterializeFastCacheItems(cache.Items, appsOnly: true, reportProgress: true, cancellationToken);
+            if (version != Volatile.Read(ref _cacheOperationVersion))
+            {
+                return false;
+            }
+
+            AppDiagnostics.LogInfo(
+                $"legacy fast full-path cache materialize app items done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; apps={appItems.Count:N0}; rawItems={cache.Items.Length:N0}",
+                "index startup");
+            ReplaceCachedIndex(appItems);
+            AppDiagnostics.LogInfo(
+                $"legacy fast full-path app cache load done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; indexed={IndexedCount:N0}; fullCacheQueued=true",
+                "index startup");
+            QueueFullFastMemoryPackCacheLoad(cache, migrateAfterLoad: true);
+            return true;
+        }
+        catch (OperationCanceledException)
+        {
+            throw;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load file index cache {Path.GetFileName(_fastMemoryPackCachePath)}");
+            ClearIndex();
+            return false;
+        }
+    }
+
+    private List<IndexedFileItem> MaterializeFastCacheItems(
+        IReadOnlyList<FastMemoryPackedFileIndexItem> rawItems,
+        bool appsOnly,
+        bool reportProgress,
+        CancellationToken cancellationToken)
+    {
+        var items = new List<IndexedFileItem>(appsOnly ? Math.Min(rawItems.Count, 8192) : rawItems.Count);
+        foreach (var item in rawItems)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (string.IsNullOrWhiteSpace(item.Path)
+                || (appsOnly && !IsLaunchablePath(item.Path, item.IsDirectory)))
+            {
+                continue;
+            }
+
+            items.Add(CreateIndexedFileItem(item.Path, item.IsDirectory));
+            if (reportProgress && (items.Count & 0x3FF) == 0)
+            {
+                Interlocked.Exchange(ref _indexedCount, items.Count);
+            }
+        }
+
+        return items;
+    }
+
+    private void QueueFullFastMemoryPackCacheLoad(FastMemoryPackedFileIndexCache cache, bool migrateAfterLoad)
+    {
+        var version = Volatile.Read(ref _cacheOperationVersion);
+        var cancellationToken = _indexCancellation.Token;
+        Volatile.Write(ref _isCompletingCacheLoad, true);
+        _currentRoot = "后台加载文件/文件夹缓存";
+        _ = Task.Run(() =>
+        {
+            var originalPriority = Thread.CurrentThread.Priority;
+            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                AppDiagnostics.LogInfo(
+                    $"background legacy fast full-path cache materialize start; rawItems={cache.Items.Length:N0}",
+                    "index startup");
+                var items = MaterializeFastCacheItems(cache.Items, appsOnly: false, reportProgress: false, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (version != Volatile.Read(ref _cacheOperationVersion))
+                {
+                    AppDiagnostics.LogInfo("background legacy fast full-path cache discarded; version changed", "index startup");
+                    return;
+                }
+
+                AppDiagnostics.LogInfo(
+                    $"background legacy fast full-path cache materialize done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; items={items.Count:N0}",
+                    "index startup");
+                ReplaceCachedIndex(items);
+                AppDiagnostics.LogInfo(
+                    $"background legacy fast full-path cache load done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; indexed={IndexedCount:N0}",
+                    "index startup");
+                if (migrateAfterLoad)
+                {
+                    QueueCacheSave();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogException(ex, "background legacy fast full-path cache load");
+            }
+            finally
+            {
+                Thread.CurrentThread.Priority = originalPriority;
+                if (version == Volatile.Read(ref _cacheOperationVersion))
+                {
+                    _currentRoot = string.Empty;
+                    Volatile.Write(ref _isCompletingCacheLoad, false);
+                }
+            }
+        });
+    }
+
     private bool TryLoadMemoryPackCache(CancellationToken cancellationToken)
     {
         try
         {
+            var stopwatch = Stopwatch.StartNew();
+            var version = Volatile.Read(ref _cacheOperationVersion);
+            AppDiagnostics.LogInfo("MemoryPack cache deserialize start", "index startup");
             PrepareCacheProgress(_memoryPackCachePath);
             using var stream = new FileStream(
                 _memoryPackCachePath,
@@ -195,6 +480,9 @@ public sealed partial class LocalFileSearchService
                 .GetAwaiter()
                 .GetResult();
             cancellationToken.ThrowIfCancellationRequested();
+            AppDiagnostics.LogInfo(
+                $"MemoryPack cache deserialize done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; rawItems={cache?.Items?.Length ?? 0:N0}",
+                "index startup");
             if (cache?.Version != MemoryPackCacheVersion
                 || cache.Directories is not { Length: > 0 }
                 || cache.Items is not { Length: > 0 })
@@ -202,24 +490,24 @@ public sealed partial class LocalFileSearchService
                 return false;
             }
 
-            var items = new List<IndexedFileItem>(cache.Items.Length);
-            foreach (var item in cache.Items)
+            AppDiagnostics.LogInfo(
+                $"MemoryPack cache materialize app items start; rawItems={cache.Items.Length:N0}; directories={cache.Directories.Length:N0}",
+                "index startup");
+            var appItems = MaterializeMemoryPackCacheItems(cache, appsOnly: true, reportProgress: true, cancellationToken);
+            if (version != Volatile.Read(ref _cacheOperationVersion))
             {
-                cancellationToken.ThrowIfCancellationRequested();
-                if ((uint)item.DirectoryIndex >= (uint)cache.Directories.Length || string.IsNullOrWhiteSpace(item.Name))
-                {
-                    continue;
-                }
-
-                items.Add(CreateIndexedFileItem(CombineCachedPath(cache.Directories[item.DirectoryIndex], item.Name), item.IsDirectory));
-                if ((items.Count & 0x3FF) == 0)
-                {
-                    Interlocked.Exchange(ref _indexedCount, items.Count);
-                }
+                return false;
             }
 
-            ReplaceCachedIndex(items);
-            return IndexedCount > 0;
+            AppDiagnostics.LogInfo(
+                $"MemoryPack cache materialize app items done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; apps={appItems.Count:N0}",
+                "index startup");
+            ReplaceCachedIndex(appItems);
+            AppDiagnostics.LogInfo(
+                $"MemoryPack app cache load done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; indexed={IndexedCount:N0}; fullCacheQueued=true",
+                "index startup");
+            QueueFullMemoryPackCacheLoad(cache, migrateAfterLoad: true);
+            return true;
         }
         catch (OperationCanceledException)
         {
@@ -231,6 +519,169 @@ public sealed partial class LocalFileSearchService
             ClearIndex();
             return false;
         }
+    }
+
+    private List<IndexedFileItem> MaterializeMemoryPackCacheItems(
+        MemoryPackedFileIndexCache cache,
+        bool appsOnly,
+        bool reportProgress,
+        CancellationToken cancellationToken)
+    {
+        var directories = cache.Directories;
+        var rawItems = cache.Items;
+        var items = new List<IndexedFileItem>(appsOnly ? Math.Min(rawItems.Length, 8192) : rawItems.Length);
+        foreach (var item in rawItems)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if ((uint)item.DirectoryIndex >= (uint)directories.Length
+                || string.IsNullOrWhiteSpace(item.Name)
+                || (appsOnly && !IsLaunchableName(item.Name, item.IsDirectory)))
+            {
+                continue;
+            }
+
+            items.Add(CreateIndexedFileItem(CombineCachedPath(directories[item.DirectoryIndex], item.Name), item.IsDirectory));
+            if (reportProgress && (items.Count & 0x3FF) == 0)
+            {
+                Interlocked.Exchange(ref _indexedCount, items.Count);
+            }
+        }
+
+        return items;
+    }
+
+    private void QueueFullMemoryPackCacheLoad(MemoryPackedFileIndexCache cache, bool migrateAfterLoad)
+    {
+        var version = Volatile.Read(ref _cacheOperationVersion);
+        var cancellationToken = _indexCancellation.Token;
+        Volatile.Write(ref _isCompletingCacheLoad, true);
+        _currentRoot = "后台加载文件/文件夹缓存";
+        _ = Task.Run(() =>
+        {
+            var originalPriority = Thread.CurrentThread.Priority;
+            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                AppDiagnostics.LogInfo(
+                    $"background MemoryPack cache materialize start; rawItems={cache.Items.Length:N0}; directories={cache.Directories.Length:N0}",
+                    "index startup");
+                var items = MaterializeMemoryPackCacheItems(cache, appsOnly: false, reportProgress: false, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (version != Volatile.Read(ref _cacheOperationVersion))
+                {
+                    AppDiagnostics.LogInfo("background MemoryPack cache discarded; version changed", "index startup");
+                    return;
+                }
+
+                AppDiagnostics.LogInfo(
+                    $"background MemoryPack cache materialize done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; items={items.Count:N0}",
+                    "index startup");
+                ReplaceCachedIndex(items);
+                AppDiagnostics.LogInfo(
+                    $"background MemoryPack cache load done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; indexed={IndexedCount:N0}",
+                    "index startup");
+                if (migrateAfterLoad)
+                {
+                    QueueCacheSave();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogException(ex, "background MemoryPack cache load");
+            }
+            finally
+            {
+                Thread.CurrentThread.Priority = originalPriority;
+                if (version == Volatile.Read(ref _cacheOperationVersion))
+                {
+                    _currentRoot = string.Empty;
+                    Volatile.Write(ref _isCompletingCacheLoad, false);
+                }
+            }
+        });
+    }
+
+    private void QueueFullMemoryPackCacheLoadFromFile(string cachePath, bool migrateAfterLoad)
+    {
+        var version = Volatile.Read(ref _cacheOperationVersion);
+        var cancellationToken = _indexCancellation.Token;
+        Volatile.Write(ref _isCompletingCacheLoad, true);
+        _currentRoot = "后台读取文件/文件夹缓存";
+        _ = Task.Run(() =>
+        {
+            var originalPriority = Thread.CurrentThread.Priority;
+            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                AppDiagnostics.LogInfo($"background MemoryPack cache deserialize start; file={Path.GetFileName(cachePath)}", "index startup");
+                PrepareCacheProgress(cachePath);
+                using var stream = new FileStream(
+                    cachePath,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read,
+                    CacheFileBufferSize,
+                    FileOptions.SequentialScan);
+                using var progressStream = new ProgressReadStream(stream, bytesRead => Interlocked.Add(ref _cacheBytesRead, bytesRead));
+                var cache = MemoryPackSerializer
+                    .DeserializeAsync<MemoryPackedFileIndexCache>(progressStream, cancellationToken: cancellationToken)
+                    .AsTask()
+                    .GetAwaiter()
+                    .GetResult();
+                cancellationToken.ThrowIfCancellationRequested();
+                if (cache?.Version != MemoryPackCacheVersion
+                    || cache.Directories is not { Length: > 0 }
+                    || cache.Items is not { Length: > 0 })
+                {
+                    AppDiagnostics.LogInfo("background MemoryPack cache invalid; skip full cache load", "index startup");
+                    return;
+                }
+
+                AppDiagnostics.LogInfo(
+                    $"background MemoryPack cache deserialize done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; rawItems={cache.Items.Length:N0}; directories={cache.Directories.Length:N0}",
+                    "index startup");
+                var items = MaterializeMemoryPackCacheItems(cache, appsOnly: false, reportProgress: false, cancellationToken);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (version != Volatile.Read(ref _cacheOperationVersion))
+                {
+                    AppDiagnostics.LogInfo("background MemoryPack cache discarded; version changed", "index startup");
+                    return;
+                }
+
+                AppDiagnostics.LogInfo(
+                    $"background MemoryPack cache materialize done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; items={items.Count:N0}",
+                    "index startup");
+                ReplaceCachedIndex(items);
+                AppDiagnostics.LogInfo(
+                    $"background MemoryPack cache load done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; indexed={IndexedCount:N0}",
+                    "index startup");
+                if (migrateAfterLoad)
+                {
+                    QueueCacheSave();
+                }
+            }
+            catch (OperationCanceledException)
+            {
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogException(ex, "background MemoryPack cache load from file");
+            }
+            finally
+            {
+                Thread.CurrentThread.Priority = originalPriority;
+                if (version == Volatile.Read(ref _cacheOperationVersion))
+                {
+                    _currentRoot = string.Empty;
+                    Volatile.Write(ref _isCompletingCacheLoad, false);
+                }
+            }
+        });
     }
 
     private bool TryLoadCompactMemoryPackCache(CancellationToken cancellationToken)
@@ -582,6 +1033,7 @@ public sealed partial class LocalFileSearchService
             Volatile.Read(ref _skippedCount),
             _currentRoot,
             _isLoadingCache,
+            Volatile.Read(ref _isCompletingCacheLoad),
             Volatile.Read(ref _cacheBytesRead),
             Volatile.Read(ref _cacheBytesTotal));
     }
@@ -600,6 +1052,7 @@ public sealed partial class LocalFileSearchService
                 return;
             }
 
+            StopIncrementalIndexing();
             _isIndexing = true;
             _indexTask = Task.Run(() => BuildIndex(_indexCancellation.Token));
         }
@@ -609,6 +1062,8 @@ public sealed partial class LocalFileSearchService
     {
         lock (_indexStartLock)
         {
+            AppDiagnostics.LogInfo("rebuild file index", "index startup");
+            StopIncrementalIndexing();
             if (_indexTask is { IsCompleted: false })
             {
                 _indexCancellation.Cancel();
@@ -628,6 +1083,116 @@ public sealed partial class LocalFileSearchService
         }
     }
 
+    public void StartIncrementalIndexing()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        AppDiagnostics.LogInfo("start FileSystemWatcher; queue NTFS USN delta", "index startup");
+        lock (_watcherLock)
+        {
+            StopIncrementalIndexingCore();
+            foreach (var root in SearchRoots())
+            {
+                try
+                {
+                    var watcher = new FileSystemWatcher(root)
+                    {
+                        IncludeSubdirectories = true,
+                        InternalBufferSize = 64 * 1024,
+                        NotifyFilter = NotifyFilters.FileName
+                            | NotifyFilters.DirectoryName
+                            | NotifyFilters.Attributes
+                            | NotifyFilters.Size
+                            | NotifyFilters.LastWrite
+                            | NotifyFilters.CreationTime
+                    };
+
+                    watcher.Created += OnFileCreatedOrChanged;
+                    watcher.Changed += OnFileCreatedOrChanged;
+                    watcher.Deleted += OnFileDeleted;
+                    watcher.Renamed += OnFileRenamed;
+                    watcher.Error += OnWatcherError;
+                    watcher.EnableRaisingEvents = true;
+                    _watchers.Add(watcher);
+                }
+                catch (Exception ex)
+                {
+                    AppDiagnostics.LogException(ex, $"watch file index root {root}");
+                }
+            }
+        }
+
+        QueueNtfsJournalUpdate();
+    }
+
+    public void StopIncrementalIndexing()
+    {
+        lock (_watcherLock)
+        {
+            StopIncrementalIndexingCore();
+        }
+    }
+
+    public Task<int> ClearCacheDataAsync()
+    {
+        return Task.Run(ClearCacheData);
+    }
+
+    public int ClearCacheData()
+    {
+        AppDiagnostics.LogInfo("clear navigation cache data start", "settings");
+        lock (_indexStartLock)
+        {
+            Interlocked.Increment(ref _cacheOperationVersion);
+            Interlocked.Exchange(ref _cacheSaveQueued, 0);
+            StopIncrementalIndexing();
+            if (_indexTask is { IsCompleted: false })
+            {
+                _indexCancellation.Cancel();
+            }
+
+            _indexCancellation.Dispose();
+            _indexCancellation = new CancellationTokenSource();
+            _isIndexing = false;
+            _isLoadingCache = false;
+            Volatile.Write(ref _isCompletingCacheLoad, false);
+            _currentRoot = string.Empty;
+            Interlocked.Exchange(ref _rootsTotal, 0);
+            Interlocked.Exchange(ref _rootsCompleted, 0);
+            Interlocked.Exchange(ref _directoriesScanned, 0);
+            Interlocked.Exchange(ref _directoriesQueued, 0);
+            Interlocked.Exchange(ref _skippedCount, 0);
+            Interlocked.Exchange(ref _cacheBytesRead, 0);
+            Interlocked.Exchange(ref _cacheBytesTotal, 0);
+            ClearIndex();
+        }
+
+        int deleted;
+        lock (_cacheSaveLock)
+        {
+            deleted = DeleteCacheFiles();
+        }
+
+        AppDiagnostics.LogInfo($"clear navigation cache data done; deletedFiles={deleted:N0}", "settings");
+        return deleted;
+    }
+
+    public void Dispose()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        _disposed = true;
+        StopIncrementalIndexing();
+        _indexCancellation.Cancel();
+        _indexCancellation.Dispose();
+    }
+
     public async Task<LocalFileSearchResponse> SearchAsync(string query, int maxResults, CancellationToken cancellationToken)
     {
         var trimmedQuery = query.Trim();
@@ -637,21 +1202,128 @@ public sealed partial class LocalFileSearchService
         }
 
         var expression = EverythingSearchParser.Parse(trimmedQuery);
-
-        var results = await Task.Run(() =>
+        await _searchGate.WaitAsync(cancellationToken).ConfigureAwait(false);
+        try
         {
-            cancellationToken.ThrowIfCancellationRequested();
-            return SearchIndex(expression, trimmedQuery, maxResults, cancellationToken);
-        }, cancellationToken);
+            var results = await Task.Run(() =>
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                return SearchIndex(expression, trimmedQuery, maxResults, cancellationToken);
+            }, cancellationToken).ConfigureAwait(false);
 
-        return new LocalFileSearchResponse(results, IsIndexing, IndexedCount);
+            return new LocalFileSearchResponse(results, IsIndexing, IndexedCount);
+        }
+        finally
+        {
+            _searchGate.Release();
+        }
+    }
+
+    private void StopIncrementalIndexingCore()
+    {
+        foreach (var watcher in _watchers)
+        {
+            try
+            {
+                watcher.EnableRaisingEvents = false;
+                watcher.Created -= OnFileCreatedOrChanged;
+                watcher.Changed -= OnFileCreatedOrChanged;
+                watcher.Deleted -= OnFileDeleted;
+                watcher.Renamed -= OnFileRenamed;
+                watcher.Error -= OnWatcherError;
+                watcher.Dispose();
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogException(ex, "dispose file index watcher");
+            }
+        }
+
+        _watchers = [];
+    }
+
+    private void OnFileCreatedOrChanged(object sender, FileSystemEventArgs e)
+    {
+        QueuePathRefresh(e.FullPath, e.ChangeType == WatcherChangeTypes.Created);
+    }
+
+    private void OnFileDeleted(object sender, FileSystemEventArgs e)
+    {
+        QueuePathRemoval(e.FullPath);
+    }
+
+    private void OnFileRenamed(object sender, RenamedEventArgs e)
+    {
+        QueuePathRemoval(e.OldFullPath);
+        QueuePathRefresh(e.FullPath, true);
+    }
+
+    private static void OnWatcherError(object sender, ErrorEventArgs e)
+    {
+        AppDiagnostics.LogException(e.GetException(), "file index watcher");
+    }
+
+    private void QueuePathRefresh(string path, bool scanChildren)
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        _ = Task.Run(() => RefreshPath(path, scanChildren));
+    }
+
+    private void QueuePathRemoval(string path)
+    {
+        if (_disposed || string.IsNullOrWhiteSpace(path))
+        {
+            return;
+        }
+
+        _ = Task.Run(() =>
+        {
+            RemoveFromIndex(path, true);
+            QueueCacheSave();
+        });
+    }
+
+    private void RefreshPath(string path, bool scanChildren)
+    {
+        try
+        {
+            var attributes = File.GetAttributes(path);
+            var isDirectory = attributes.HasFlag(FileAttributes.Directory);
+            if (isDirectory && ShouldSkipDirectory(path, attributes))
+            {
+                RemoveFromIndex(path, true);
+                QueueCacheSave();
+                return;
+            }
+
+            AddOrReplaceIndexedPath(path, isDirectory);
+            if (isDirectory && scanChildren && ShouldDescendDirectory(attributes))
+            {
+                IndexRoot(path, CancellationToken.None);
+            }
+
+            QueueCacheSave();
+        }
+        catch
+        {
+            RemoveFromIndex(path, true);
+            QueueCacheSave();
+        }
     }
 
     private LauncherSearchResult[] SearchIndex(ISearchNode expression, string query, int maxResults, CancellationToken cancellationToken)
     {
+        var stopwatch = Stopwatch.StartNew();
         var capacity = Math.Max(maxResults * 10, maxResults);
-        var items = TryGetFastNameCandidates(query) ?? GetSearchItems();
+        var fastCandidates = TryGetFastCandidates(query, maxResults);
+        var usedFastCandidates = fastCandidates is not null;
+        var items = fastCandidates ?? GetSearchItems();
         var candidates = new List<ScoredFileItem>(capacity);
+        var seenPaths = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var lowestScore = 0;
         var scanned = 0;
 
@@ -662,13 +1334,18 @@ public sealed partial class LocalFileSearchService
                 cancellationToken.ThrowIfCancellationRequested();
             }
 
-            var score = expression.Score(item);
+            if (!_index.TryGetValue(item.Path, out var activeItem) || !seenPaths.Add(activeItem.Path))
+            {
+                continue;
+            }
+
+            var score = expression.Score(activeItem);
             if (score <= 0 || (candidates.Count >= capacity && score < lowestScore))
             {
                 continue;
             }
 
-            candidates.Add(new ScoredFileItem(item, score));
+            candidates.Add(new ScoredFileItem(activeItem, score));
             if (candidates.Count < capacity)
             {
                 if (lowestScore == 0 || score < lowestScore)
@@ -690,7 +1367,7 @@ public sealed partial class LocalFileSearchService
 
         cancellationToken.ThrowIfCancellationRequested();
         candidates.Sort(CompareScoredItems);
-        return candidates
+        var results = candidates
             .Take(maxResults)
             .Select(result => new LauncherSearchResult
             {
@@ -701,12 +1378,21 @@ public sealed partial class LocalFileSearchService
                 SearchSortName = result.Item.SearchNameWithoutExtension
             })
             .ToArray();
+        var elapsedMs = stopwatch.ElapsedMilliseconds;
+        if (elapsedMs >= 300)
+        {
+            AppDiagnostics.LogInfo(
+                $"search slow; elapsedMs={elapsedMs:N0}; scanned={scanned:N0}; returned={results.Length:N0}; mode={(usedFastCandidates ? "fast" : "full")}; queryLength={query.Length:N0}; cachedRootKeys={_cachedPathRootIndex.Count:N0}; cachedStartKeys={_cachedNameStartCharacterIndex.Count:N0}; cachedStartBigramKeys={_cachedNameStartBigramIndex.Count:N0}; cachedCharKeys={_cachedNameCharacterIndex.Count:N0}; cachedBigramKeys={_cachedNameBigramIndex.Count:N0}; cachedGramKeys={_cachedNameTrigramIndex.Count:N0}; liveRootKeys={_pathRootIndex.Count:N0}; liveStartKeys={_nameStartCharacterIndex.Count:N0}; liveStartBigramKeys={_nameStartBigramIndex.Count:N0}; liveCharKeys={_nameCharacterIndex.Count:N0}; liveBigramKeys={_nameBigramIndex.Count:N0}; liveGramKeys={_nameTrigramIndex.Count:N0}",
+                "navigation search");
+        }
+
+        return results;
     }
 
     private IEnumerable<IndexedFileItem> GetSearchItems()
     {
         var snapshot = _itemsSnapshot;
-        return snapshot.Length > 0 ? snapshot : _index.Values;
+        return snapshot.Count > 0 ? snapshot : _index.Values;
     }
 
     private static int CompareScoredItems(ScoredFileItem left, ScoredFileItem right)
@@ -741,7 +1427,12 @@ public sealed partial class LocalFileSearchService
             {
                 cancellationToken.ThrowIfCancellationRequested();
                 _currentRoot = root;
-                IndexRoot(root, cancellationToken);
+                AppDiagnostics.LogInfo($"root={root}; try NTFS MFT enumeration", "index startup");
+                if (!TryIndexNtfsRoot(root, cancellationToken))
+                {
+                    AppDiagnostics.LogInfo($"root={root}; fallback to directory scan", "index startup");
+                    IndexRoot(root, cancellationToken);
+                }
                 Interlocked.Increment(ref _rootsCompleted);
             }
         }
@@ -759,54 +1450,109 @@ public sealed partial class LocalFileSearchService
             if (!cancellationToken.IsCancellationRequested)
             {
                 SaveCache();
+                StartIncrementalIndexing();
             }
         }
     }
 
     private void SaveCache()
     {
-        try
+        lock (_cacheSaveLock)
         {
-            Directory.CreateDirectory(Path.GetDirectoryName(_memoryPackCachePath)!);
-            var tempPath = $"{_memoryPackCachePath}.tmp";
-            TryDeleteFile(tempPath);
-            var cache = CreateMemoryPackCache();
-
-            using (var stream = new FileStream(
-                       tempPath,
-                       FileMode.CreateNew,
-                       FileAccess.Write,
-                       FileShare.None,
-                       CacheFileBufferSize,
-                       FileOptions.SequentialScan))
+            try
             {
-                MemoryPackSerializer
-                    .SerializeAsync(stream, cache)
-                    .AsTask()
-                    .GetAwaiter()
-                    .GetResult();
-            }
+                var stopwatch = Stopwatch.StartNew();
+                AppDiagnostics.LogInfo("save MemoryPack cache start", "index startup");
+                Directory.CreateDirectory(Path.GetDirectoryName(_memoryPackCachePath)!);
+                var tempPath = $"{_memoryPackCachePath}.tmp";
+                var appTempPath = $"{_appMemoryPackCachePath}.tmp";
+                TryDeleteFile(tempPath);
+                TryDeleteFile(appTempPath);
+                var cache = CreateMemoryPackCache();
+                var appCache = CreateAppMemoryPackCache();
 
-            if (File.Exists(_memoryPackCachePath))
+                using (var stream = new FileStream(
+                           tempPath,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.None,
+                           CacheFileBufferSize,
+                           FileOptions.SequentialScan))
+                {
+                    MemoryPackSerializer
+                        .SerializeAsync(stream, cache)
+                        .AsTask()
+                        .GetAwaiter()
+                        .GetResult();
+                }
+
+                using (var stream = new FileStream(
+                           appTempPath,
+                           FileMode.CreateNew,
+                           FileAccess.Write,
+                           FileShare.None,
+                           CacheFileBufferSize,
+                           FileOptions.SequentialScan))
+                {
+                    MemoryPackSerializer
+                        .SerializeAsync(stream, appCache)
+                        .AsTask()
+                        .GetAwaiter()
+                        .GetResult();
+                }
+
+                if (File.Exists(_memoryPackCachePath))
+                {
+                    File.Delete(_memoryPackCachePath);
+                }
+
+                if (File.Exists(_appMemoryPackCachePath))
+                {
+                    File.Delete(_appMemoryPackCachePath);
+                }
+
+                File.Move(tempPath, _memoryPackCachePath);
+                File.Move(appTempPath, _appMemoryPackCachePath);
+                TryDeleteFile(_fastMemoryPackCachePath);
+                TryDeleteFile(_compactMemoryPackCachePath);
+                TryDeleteFile(_legacyMemoryPackCachePath);
+                TryDeleteFile(_binaryCachePath);
+                TryDeleteFile(_jsonCachePath);
+                SaveNtfsJournalCache();
+                AppDiagnostics.LogInfo($"save MemoryPack cache done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}", "index startup");
+            }
+            catch (Exception ex)
             {
-                File.Delete(_memoryPackCachePath);
+                AppDiagnostics.LogException(ex, "save file index cache");
             }
-
-            File.Move(tempPath, _memoryPackCachePath);
-            TryDeleteFile(_compactMemoryPackCachePath);
-            TryDeleteFile(_legacyMemoryPackCachePath);
-            TryDeleteFile(_binaryCachePath);
-            TryDeleteFile(_jsonCachePath);
-        }
-        catch (Exception ex)
-        {
-            AppDiagnostics.LogException(ex, "save file index cache");
         }
     }
 
     private void QueueCacheSave()
     {
-        _ = Task.Run(SaveCache);
+        var version = Volatile.Read(ref _cacheOperationVersion);
+        if (Interlocked.Exchange(ref _cacheSaveQueued, 1) == 1)
+        {
+            return;
+        }
+
+        _ = Task.Run(async () =>
+        {
+            await Task.Delay(TimeSpan.FromSeconds(2)).ConfigureAwait(false);
+            Interlocked.Exchange(ref _cacheSaveQueued, 0);
+            if (_disposed || version != Volatile.Read(ref _cacheOperationVersion))
+            {
+                return;
+            }
+
+            if (Volatile.Read(ref _isCompletingCacheLoad) || _isIndexing)
+            {
+                QueueCacheSave();
+                return;
+            }
+
+            SaveCache();
+        });
     }
 
     private MemoryPackedFileIndexCache CreateMemoryPackCache()
@@ -844,6 +1590,56 @@ public sealed partial class LocalFileSearchService
             Version = MemoryPackCacheVersion,
             UpdatedAtUnixMilliseconds = DateTimeOffset.Now.ToUnixTimeMilliseconds(),
             Directories = directories.ToArray(),
+            Items = items.ToArray()
+        };
+    }
+
+    private AppMemoryPackedFileIndexCache CreateAppMemoryPackCache()
+    {
+        var items = new List<AppMemoryPackedFileIndexItem>();
+        foreach (var item in GetSearchItems())
+        {
+            if (!item.IsApp || string.IsNullOrWhiteSpace(item.Path))
+            {
+                continue;
+            }
+
+            items.Add(new AppMemoryPackedFileIndexItem
+            {
+                Path = item.Path,
+                IsDirectory = item.IsDirectory
+            });
+        }
+
+        return new AppMemoryPackedFileIndexCache
+        {
+            Version = AppMemoryPackCacheVersion,
+            UpdatedAtUnixMilliseconds = DateTimeOffset.Now.ToUnixTimeMilliseconds(),
+            Items = items.ToArray()
+        };
+    }
+
+    private FastMemoryPackedFileIndexCache CreateFastMemoryPackCache()
+    {
+        var items = new List<FastMemoryPackedFileIndexItem>();
+        foreach (var item in GetSearchItems())
+        {
+            if (string.IsNullOrWhiteSpace(item.Path))
+            {
+                continue;
+            }
+
+            items.Add(new FastMemoryPackedFileIndexItem
+            {
+                Path = item.Path,
+                IsDirectory = item.IsDirectory
+            });
+        }
+
+        return new FastMemoryPackedFileIndexCache
+        {
+            Version = FastMemoryPackCacheVersion,
+            UpdatedAtUnixMilliseconds = DateTimeOffset.Now.ToUnixTimeMilliseconds(),
             Items = items.ToArray()
         };
     }
@@ -942,45 +1738,190 @@ public sealed partial class LocalFileSearchService
     {
         if (_index.TryAdd(item.Path, item))
         {
-            AddToNameTrigramIndex(item);
+            AddToPathRootIndex(item);
+            AddToNameAccelerationIndexes(item);
             Interlocked.Increment(ref _indexedCount);
+        }
+    }
+
+    private void AddOrReplaceIndexedPath(string path, bool isDirectory)
+    {
+        RemoveFromIndex(path, false);
+        AddCachedItem(CreateIndexedFileItem(path, isDirectory));
+    }
+
+    private void RemoveFromIndex(string path, bool includeChildren)
+    {
+        var trimmed = path.TrimEnd(Path.DirectorySeparatorChar, Path.AltDirectorySeparatorChar);
+        var childPrefix = $"{trimmed}{Path.DirectorySeparatorChar}";
+
+        foreach (var key in _index.Keys)
+        {
+            if (!key.Equals(trimmed, StringComparison.OrdinalIgnoreCase)
+                && (!includeChildren || !key.StartsWith(childPrefix, StringComparison.OrdinalIgnoreCase)))
+            {
+                continue;
+            }
+
+            if (_index.TryRemove(key, out _))
+            {
+                Interlocked.Decrement(ref _indexedCount);
+            }
         }
     }
 
     private void ReplaceCachedIndex(IReadOnlyCollection<IndexedFileItem> items)
     {
-        ClearIndex();
+        var stopwatch = Stopwatch.StartNew();
+        AppDiagnostics.LogInfo($"build path lookup start; items={items.Count:N0}", "index startup");
         if (items.Count == 0)
         {
+            ClearIndex();
             return;
         }
 
-        var itemArray = items as IndexedFileItem[] ?? items.ToArray();
-        var characterIndex = new Dictionary<char, List<IndexedFileItem>>();
-        var trigramIndex = new Dictionary<NameGram, List<IndexedFileItem>>();
-
-        foreach (var item in itemArray)
+        Interlocked.Increment(ref _nameIndexBuildVersion);
+        var activeItems = items as IReadOnlyList<IndexedFileItem> ?? items.ToArray();
+        var index = new ConcurrentDictionary<string, IndexedFileItem>(StringComparer.OrdinalIgnoreCase);
+        var pathRootIndex = new Dictionary<string, List<IndexedFileItem>>(StringComparer.OrdinalIgnoreCase);
+        var nameStartCharacterIndex = new Dictionary<char, List<IndexedFileItem>>();
+        var nameStartBigramIndex = new Dictionary<NameBigram, List<IndexedFileItem>>();
+        var indexed = 0;
+        foreach (var item in items)
         {
-            AddToNameLookupBuilders(item, characterIndex, trigramIndex);
+            if (!index.TryAdd(item.Path, item))
+            {
+                continue;
+            }
+
+            AddToPathRootLookupBuilders(item, pathRootIndex);
+            AddToNameStartLookupBuilders(item, nameStartCharacterIndex, nameStartBigramIndex);
+            indexed++;
         }
 
-        _cachedNameCharacterIndex = characterIndex.ToDictionary(
+        _index = index;
+        _pathRootIndex = new ConcurrentDictionary<string, ConcurrentBag<IndexedFileItem>>(StringComparer.OrdinalIgnoreCase);
+        _nameStartCharacterIndex = new ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>>();
+        _nameStartBigramIndex = new ConcurrentDictionary<NameBigram, ConcurrentBag<IndexedFileItem>>();
+        _nameCharacterIndex = new ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>>();
+        _nameBigramIndex = new ConcurrentDictionary<NameBigram, ConcurrentBag<IndexedFileItem>>();
+        _nameTrigramIndex = new ConcurrentDictionary<NameGram, ConcurrentBag<IndexedFileItem>>();
+        _cachedPathRootIndex = pathRootIndex.ToDictionary(
+            pair => pair.Key,
+            pair => pair.Value.ToArray(),
+            StringComparer.OrdinalIgnoreCase);
+        _cachedNameStartCharacterIndex = nameStartCharacterIndex.ToDictionary(
             pair => pair.Key,
             pair => pair.Value.ToArray());
-        _cachedNameTrigramIndex = trigramIndex.ToDictionary(
+        _cachedNameStartBigramIndex = nameStartBigramIndex.ToDictionary(
             pair => pair.Key,
             pair => pair.Value.ToArray());
-        _itemsSnapshot = itemArray;
-        Interlocked.Exchange(ref _indexedCount, itemArray.Length);
+        _itemsSnapshot = activeItems;
+        Interlocked.Exchange(ref _indexedCount, indexed);
+        AppDiagnostics.LogInfo(
+            $"build path lookup done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; indexed={IndexedCount:N0}; startCharKeys={_cachedNameStartCharacterIndex.Count:N0}; startBigramKeys={_cachedNameStartBigramIndex.Count:N0}",
+            "index startup");
+        QueueCachedNameIndexBuild(activeItems);
+    }
+
+    private void QueueCachedNameIndexBuild(IReadOnlyList<IndexedFileItem> items)
+    {
+        var version = Volatile.Read(ref _nameIndexBuildVersion);
+        AppDiagnostics.LogInfo($"build name acceleration index queued; items={items.Count:N0}", "index startup");
+        _ = Task.Run(() =>
+        {
+            var originalPriority = Thread.CurrentThread.Priority;
+            Thread.CurrentThread.Priority = ThreadPriority.BelowNormal;
+            var stopwatch = Stopwatch.StartNew();
+            try
+            {
+                var bigramIndex = new Dictionary<NameBigram, List<IndexedFileItem>>();
+                foreach (var item in items)
+                {
+                    AddToNameBigramLookupBuilders(item, bigramIndex);
+                }
+
+                if (version != Volatile.Read(ref _nameIndexBuildVersion))
+                {
+                    AppDiagnostics.LogInfo("build bigram acceleration index discarded; version changed", "index startup");
+                    return;
+                }
+
+                _cachedNameBigramIndex = bigramIndex.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.ToArray());
+                AppDiagnostics.LogInfo(
+                    $"build bigram acceleration index done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; startKeys={_cachedNameStartCharacterIndex.Count:N0}; startBigramKeys={_cachedNameStartBigramIndex.Count:N0}; bigramKeys={_cachedNameBigramIndex.Count:N0}",
+                    "index startup");
+                bigramIndex.Clear();
+
+                var characterIndex = new Dictionary<char, List<IndexedFileItem>>();
+                foreach (var item in items)
+                {
+                    AddToNameCharacterLookupBuilders(item, characterIndex);
+                }
+
+                if (version != Volatile.Read(ref _nameIndexBuildVersion))
+                {
+                    AppDiagnostics.LogInfo("build character acceleration index discarded; version changed", "index startup");
+                    return;
+                }
+
+                _cachedNameCharacterIndex = characterIndex.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.ToArray());
+                AppDiagnostics.LogInfo(
+                    $"build character acceleration index done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; nameKeys={_cachedNameCharacterIndex.Count:N0}",
+                    "index startup");
+                characterIndex.Clear();
+
+                var trigramIndex = new Dictionary<NameGram, List<IndexedFileItem>>();
+                foreach (var item in items)
+                {
+                    AddToNameTrigramLookupBuilders(item, trigramIndex);
+                }
+
+                if (version != Volatile.Read(ref _nameIndexBuildVersion))
+                {
+                    AppDiagnostics.LogInfo("build trigram acceleration index discarded; version changed", "index startup");
+                    return;
+                }
+
+                _cachedNameTrigramIndex = trigramIndex.ToDictionary(
+                    pair => pair.Key,
+                    pair => pair.Value.ToArray());
+                AppDiagnostics.LogInfo(
+                    $"build trigram acceleration index done; elapsedMs={stopwatch.ElapsedMilliseconds:N0}; gramKeys={_cachedNameTrigramIndex.Count:N0}",
+                    "index startup");
+            }
+            catch (Exception ex)
+            {
+                AppDiagnostics.LogException(ex, "build name acceleration index");
+            }
+            finally
+            {
+                Thread.CurrentThread.Priority = originalPriority;
+            }
+        });
     }
 
     private void ClearIndex()
     {
-        _index.Clear();
-        _nameCharacterIndex.Clear();
-        _nameTrigramIndex.Clear();
+        Interlocked.Increment(ref _nameIndexBuildVersion);
+        _index = new ConcurrentDictionary<string, IndexedFileItem>(StringComparer.OrdinalIgnoreCase);
+        _pathRootIndex = new ConcurrentDictionary<string, ConcurrentBag<IndexedFileItem>>(StringComparer.OrdinalIgnoreCase);
+        _nameStartCharacterIndex = new ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>>();
+        _nameStartBigramIndex = new ConcurrentDictionary<NameBigram, ConcurrentBag<IndexedFileItem>>();
+        _nameCharacterIndex = new ConcurrentDictionary<char, ConcurrentBag<IndexedFileItem>>();
+        _nameBigramIndex = new ConcurrentDictionary<NameBigram, ConcurrentBag<IndexedFileItem>>();
+        _nameTrigramIndex = new ConcurrentDictionary<NameGram, ConcurrentBag<IndexedFileItem>>();
+        _ntfsVolumeIndexes.Clear();
         _itemsSnapshot = [];
+        _cachedPathRootIndex = new Dictionary<string, IndexedFileItem[]>(StringComparer.OrdinalIgnoreCase);
+        _cachedNameStartCharacterIndex = new Dictionary<char, IndexedFileItem[]>();
+        _cachedNameStartBigramIndex = new Dictionary<NameBigram, IndexedFileItem[]>();
         _cachedNameCharacterIndex = new Dictionary<char, IndexedFileItem[]>();
+        _cachedNameBigramIndex = new Dictionary<NameBigram, IndexedFileItem[]>();
         _cachedNameTrigramIndex = new Dictionary<NameGram, IndexedFileItem[]>();
         Interlocked.Exchange(ref _indexedCount, 0);
     }
@@ -999,53 +1940,225 @@ public sealed partial class LocalFileSearchService
         }
     }
 
-    private IEnumerable<IndexedFileItem>? TryGetFastNameCandidates(string query)
+    private int DeleteCacheFiles()
     {
-        if (!TryGetSimpleNameTerms(query, out var terms))
+        var deleted = 0;
+        foreach (var path in CacheDataPaths())
+        {
+            if (TryDeleteCacheFile(path))
+            {
+                deleted++;
+            }
+
+            if (TryDeleteCacheFile($"{path}.tmp"))
+            {
+                deleted++;
+            }
+        }
+
+        return deleted;
+    }
+
+    private IEnumerable<string> CacheDataPaths()
+    {
+        yield return _appMemoryPackCachePath;
+        yield return _memoryPackCachePath;
+        yield return _fastMemoryPackCachePath;
+        yield return _compactMemoryPackCachePath;
+        yield return _legacyMemoryPackCachePath;
+        yield return _binaryCachePath;
+        yield return _jsonCachePath;
+        yield return _ntfsJournalCachePath;
+    }
+
+    private static bool TryDeleteCacheFile(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return false;
+            }
+
+            File.Delete(path);
+            return true;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"delete cache file {Path.GetFileName(path)}");
+            return false;
+        }
+    }
+
+    private IEnumerable<IndexedFileItem>? TryGetFastCandidates(string query, int maxResults)
+    {
+        return TryGetFastPathCandidates(query, maxResults) ?? TryGetFastNameCandidates(query, maxResults);
+    }
+
+    private IEnumerable<IndexedFileItem>? TryGetFastPathCandidates(string query, int maxResults)
+    {
+        if (!TryGetPathRootSearch(query, out var rootKey, out var isRootOnly))
         {
             return null;
         }
 
-        var cachedCharacterIndex = _cachedNameCharacterIndex;
-        if (cachedCharacterIndex.Count > 0)
+        _cachedPathRootIndex.TryGetValue(rootKey, out var cachedCandidates);
+        _pathRootIndex.TryGetValue(rootKey, out var liveCandidates);
+        IEnumerable<IndexedFileItem>? candidates = (cachedCandidates, liveCandidates) switch
         {
-            return TryGetFastNameCandidates(terms, cachedCharacterIndex, _cachedNameTrigramIndex);
-        }
+            (null, null) => Array.Empty<IndexedFileItem>(),
+            (not null, null) => cachedCandidates,
+            (null, not null) => liveCandidates,
+            _ => cachedCandidates.Concat(liveCandidates)
+        };
 
-        return TryGetFastNameCandidates(terms, _nameCharacterIndex, _nameTrigramIndex);
+        return isRootOnly
+            ? candidates.Take(Math.Max(maxResults * 10, maxResults))
+            : candidates;
     }
 
-    private static IEnumerable<IndexedFileItem>? TryGetFastNameCandidates<TCharacterCandidates, TTrigramCandidates>(
+    private IEnumerable<IndexedFileItem>? TryGetFastNameCandidates(string query, int maxResults)
+    {
+        if (!TryGetSimpleNameTerms(query, out var terms) && !TryGetLooseNameTerms(query, out terms))
+        {
+            return null;
+        }
+
+        return TryGetFastNameCandidates(terms, maxResults);
+    }
+
+    private IEnumerable<IndexedFileItem>? TryGetFastNameCandidates(string[] terms, int maxResults)
+    {
+        var cachedStartCharacterIndex = _cachedNameStartCharacterIndex;
+        var cachedStartBigramIndex = _cachedNameStartBigramIndex;
+        var cachedCharacterIndex = _cachedNameCharacterIndex;
+        var cachedBigramIndex = _cachedNameBigramIndex;
+        var cachedTrigramIndex = _cachedNameTrigramIndex;
+        IEnumerable<IndexedFileItem>? cachedCandidates = null;
+        if (cachedStartCharacterIndex.Count > 0 || cachedStartBigramIndex.Count > 0 || cachedCharacterIndex.Count > 0 || cachedBigramIndex.Count > 0 || cachedTrigramIndex.Count > 0)
+        {
+            cachedCandidates = TryGetFastNameCandidates(
+                terms,
+                cachedStartCharacterIndex,
+                cachedStartBigramIndex,
+                cachedCharacterIndex,
+                cachedBigramIndex,
+                cachedTrigramIndex,
+                maxResults);
+        }
+
+        IEnumerable<IndexedFileItem>? liveCandidates = null;
+        if (!_nameStartCharacterIndex.IsEmpty || !_nameStartBigramIndex.IsEmpty || !_nameCharacterIndex.IsEmpty || !_nameBigramIndex.IsEmpty || !_nameTrigramIndex.IsEmpty)
+        {
+            liveCandidates = TryGetFastNameCandidates(
+                terms,
+                _nameStartCharacterIndex,
+                _nameStartBigramIndex,
+                _nameCharacterIndex,
+                _nameBigramIndex,
+                _nameTrigramIndex,
+                maxResults);
+        }
+
+        return (cachedCandidates, liveCandidates) switch
+        {
+            (null, null) => null,
+            (not null, null) => cachedCandidates,
+            (null, not null) => liveCandidates,
+            _ => cachedCandidates.Concat(liveCandidates)
+        };
+    }
+
+    private static IEnumerable<IndexedFileItem>? TryGetFastNameCandidates<TStartCharacterCandidates, TCharacterCandidates, TBigramCandidates, TTrigramCandidates>(
         string[] terms,
+        IReadOnlyDictionary<char, TStartCharacterCandidates> startCharacterIndex,
+        IReadOnlyDictionary<NameBigram, TBigramCandidates> startBigramIndex,
         IReadOnlyDictionary<char, TCharacterCandidates> characterIndex,
-        IReadOnlyDictionary<NameGram, TTrigramCandidates> trigramIndex)
+        IReadOnlyDictionary<NameBigram, TBigramCandidates> bigramIndex,
+        IReadOnlyDictionary<NameGram, TTrigramCandidates> trigramIndex,
+        int maxResults)
+        where TStartCharacterCandidates : IReadOnlyCollection<IndexedFileItem>
         where TCharacterCandidates : IReadOnlyCollection<IndexedFileItem>
+        where TBigramCandidates : IReadOnlyCollection<IndexedFileItem>
         where TTrigramCandidates : IReadOnlyCollection<IndexedFileItem>
     {
-        var seen = new HashSet<NameGram>();
+        var seenBigrams = new HashSet<NameBigram>();
+        var seenTrigrams = new HashSet<NameGram>();
         var seenCharacters = new HashSet<char>();
+        var useBigramIndex = bigramIndex.Count > 0;
+        var useTrigramIndex = trigramIndex.Count > 0;
         IReadOnlyCollection<IndexedFileItem>? bestCandidates = null;
         var bestCount = int.MaxValue;
 
         foreach (var term in terms)
         {
             var normalized = term.ToLowerInvariant();
-            foreach (var ch in normalized)
+            if (terms.Length == 1 && normalized.Length == 1 && startCharacterIndex.Count > 0)
             {
-                if (!seenCharacters.Add(ch))
-                {
-                    continue;
-                }
-
-                if (!characterIndex.TryGetValue(ch, out var characterCandidates))
+                if (!startCharacterIndex.TryGetValue(normalized[0], out var startCandidates))
                 {
                     return Array.Empty<IndexedFileItem>();
                 }
 
-                UpdateBestCandidates(characterCandidates, ref bestCandidates, ref bestCount);
+                return LimitCandidates(startCandidates, maxResults, SingleCharacterCandidateMultiplier);
             }
 
-            if (normalized.Length < 3)
+            if (terms.Length == 1 && normalized.Length >= 2 && startBigramIndex.Count > 0)
+            {
+                var startGram = new NameBigram(normalized[0], normalized[1]);
+                if (!startBigramIndex.TryGetValue(startGram, out var startBigramCandidates))
+                {
+                    if (bigramIndex.Count == 0 && characterIndex.Count == 0)
+                    {
+                        return Array.Empty<IndexedFileItem>();
+                    }
+                }
+                else if (bigramIndex.Count == 0
+                         || (normalized.Length == 2 && startBigramCandidates.Count >= maxResults)
+                         || (normalized.Length >= 3 && trigramIndex.Count == 0))
+                {
+                    return LimitCandidates(startBigramCandidates, maxResults, StartPrefixCandidateMultiplier);
+                }
+            }
+
+            if (characterIndex.Count > 0)
+            {
+                foreach (var ch in normalized)
+                {
+                    if (!seenCharacters.Add(ch))
+                    {
+                        continue;
+                    }
+
+                    if (!characterIndex.TryGetValue(ch, out var characterCandidates))
+                    {
+                        return Array.Empty<IndexedFileItem>();
+                    }
+
+                    UpdateBestCandidates(characterCandidates, ref bestCandidates, ref bestCount);
+                }
+            }
+
+            if (useBigramIndex && normalized.Length >= 2)
+            {
+                for (var index = 0; index <= normalized.Length - 2; index++)
+                {
+                    var gram = new NameBigram(normalized[index], normalized[index + 1]);
+                    if (!seenBigrams.Add(gram))
+                    {
+                        continue;
+                    }
+
+                    if (!bigramIndex.TryGetValue(gram, out var candidates))
+                    {
+                        return Array.Empty<IndexedFileItem>();
+                    }
+
+                    UpdateBestCandidates(candidates, ref bestCandidates, ref bestCount);
+                }
+            }
+
+            if (!useTrigramIndex || normalized.Length < 3)
             {
                 continue;
             }
@@ -1053,7 +2166,7 @@ public sealed partial class LocalFileSearchService
             for (var index = 0; index <= normalized.Length - 3; index++)
             {
                 var gram = new NameGram(normalized[index], normalized[index + 1], normalized[index + 2]);
-                if (!seen.Add(gram))
+                if (!seenTrigrams.Add(gram))
                 {
                     continue;
                 }
@@ -1083,6 +2196,15 @@ public sealed partial class LocalFileSearchService
         }
     }
 
+    private static IEnumerable<IndexedFileItem> LimitCandidates(
+        IReadOnlyCollection<IndexedFileItem> candidates,
+        int maxResults,
+        int multiplier)
+    {
+        var limit = Math.Max(maxResults * multiplier, maxResults);
+        return candidates.Count > limit ? candidates.Take(limit) : candidates;
+    }
+
     private static bool TryGetSimpleNameTerms(string query, out string[] terms)
     {
         terms = [];
@@ -1103,15 +2225,282 @@ public sealed partial class LocalFileSearchService
         return terms.Length > 0;
     }
 
+    private static bool TryGetLooseNameTerms(string query, out string[] terms)
+    {
+        terms = [];
+        if (query.IndexOfAny(['|', '!', '<', '>', '\\', '/', '*', '?', '"']) >= 0)
+        {
+            return false;
+        }
+
+        var values = new List<string>();
+        foreach (var rawTerm in query.Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+        {
+            var term = StripSearchPrefixesForLooseName(rawTerm);
+            if (string.IsNullOrWhiteSpace(term))
+            {
+                continue;
+            }
+
+            AddLooseNameTerms(term, values);
+        }
+
+        terms = values
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .OrderByDescending(term => term.Length)
+            .ToArray();
+        return terms.Length > 0;
+    }
+
+    private static string StripSearchPrefixesForLooseName(string term)
+    {
+        var text = term;
+        while (true)
+        {
+            var lower = text.ToLowerInvariant();
+            if (lower.StartsWith("case:", StringComparison.Ordinal))
+            {
+                text = text[5..];
+                continue;
+            }
+
+            if (lower.StartsWith("nocase:", StringComparison.Ordinal))
+            {
+                text = text[7..];
+                continue;
+            }
+
+            if (lower.StartsWith("file:", StringComparison.Ordinal) && text.Length > 5)
+            {
+                text = text[5..];
+                continue;
+            }
+
+            if (lower.StartsWith("folder:", StringComparison.Ordinal) && text.Length > 7)
+            {
+                text = text[7..];
+                continue;
+            }
+
+            if (lower.StartsWith("folders:", StringComparison.Ordinal) && text.Length > 8)
+            {
+                text = text[8..];
+                continue;
+            }
+
+            if (lower.StartsWith("path:", StringComparison.Ordinal)
+                || lower.StartsWith("parent:", StringComparison.Ordinal)
+                || lower.StartsWith("regex:", StringComparison.Ordinal)
+                || lower.StartsWith("ext:", StringComparison.Ordinal))
+            {
+                return string.Empty;
+            }
+
+            foreach (var pair in MacroExtensions)
+            {
+                if (lower == $"{pair.Key}:")
+                {
+                    return string.Empty;
+                }
+            }
+
+            return text;
+        }
+    }
+
+    private static void AddLooseNameTerms(string text, List<string> terms)
+    {
+        var start = -1;
+        for (var index = 0; index <= text.Length; index++)
+        {
+            var isTermCharacter = index < text.Length && (char.IsLetterOrDigit(text[index]) || text[index] == '_');
+            if (isTermCharacter)
+            {
+                if (start < 0)
+                {
+                    start = index;
+                }
+
+                continue;
+            }
+
+            if (start >= 0 && index - start >= 2)
+            {
+                terms.Add(text[start..index]);
+            }
+
+            start = -1;
+        }
+    }
+
+    private static bool TryGetPathRootSearch(string query, out string rootKey, out bool isRootOnly)
+    {
+        rootKey = string.Empty;
+        isRootOnly = false;
+        var text = query.Trim();
+        if (text.Length == 0)
+        {
+            return false;
+        }
+
+        foreach (var ch in text)
+        {
+            if (char.IsWhiteSpace(ch) || ch is '|' or '!' or '<' or '>' or '"')
+            {
+                return false;
+            }
+        }
+
+        if (!TryStripPathCandidatePrefixes(text, out var pathText) || !LooksLikePathTerm(pathText))
+        {
+            return false;
+        }
+
+        if (!TryGetPathRootKey(pathText, out rootKey))
+        {
+            return false;
+        }
+
+        isRootOnly = IsRootOnlyPathTerm(pathText);
+        return true;
+    }
+
+    private static bool TryStripPathCandidatePrefixes(string text, out string pathText)
+    {
+        pathText = text;
+        while (true)
+        {
+            var lower = pathText.ToLowerInvariant();
+            if (lower.StartsWith("case:", StringComparison.Ordinal))
+            {
+                pathText = pathText[5..];
+                continue;
+            }
+
+            if (lower.StartsWith("nocase:", StringComparison.Ordinal))
+            {
+                pathText = pathText[7..];
+                continue;
+            }
+
+            if (lower.StartsWith("path:", StringComparison.Ordinal))
+            {
+                pathText = pathText[5..];
+                continue;
+            }
+
+            if (lower.StartsWith("nopath:", StringComparison.Ordinal)
+                || lower.StartsWith("regex:", StringComparison.Ordinal)
+                || lower.StartsWith("noregex:", StringComparison.Ordinal))
+            {
+                return false;
+            }
+
+            return pathText.Length > 0;
+        }
+    }
+
+    private static bool TryGetPathRootKey(string path, out string rootKey)
+    {
+        rootKey = string.Empty;
+        if (path.Length >= 2 && char.IsAsciiLetter(path[0]) && path[1] == ':')
+        {
+            rootKey = $"{char.ToLowerInvariant(path[0])}:{Path.DirectorySeparatorChar}";
+            return true;
+        }
+
+        try
+        {
+            var root = Path.GetPathRoot(path.Replace(Path.AltDirectorySeparatorChar, Path.DirectorySeparatorChar));
+            if (string.IsNullOrWhiteSpace(root))
+            {
+                return false;
+            }
+
+            rootKey = NormalizeRootKey(root);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private static string NormalizeRootKey(string root)
+    {
+        var normalized = NormalizePath(root);
+        if (normalized.Length == 2 && normalized[1] == ':')
+        {
+            return $"{normalized}{Path.DirectorySeparatorChar}";
+        }
+
+        return normalized.EndsWith(Path.DirectorySeparatorChar)
+            ? normalized
+            : $"{normalized}{Path.DirectorySeparatorChar}";
+    }
+
+    private static bool IsRootOnlyPathTerm(string path)
+    {
+        var normalized = NormalizePath(path.Trim());
+        return (normalized.Length == 2 && IsDriveTerm(normalized))
+            || (normalized.Length == 3 && IsDriveTerm(normalized) && normalized[2] == Path.DirectorySeparatorChar);
+    }
+
+    private static void AddToPathRootLookupBuilders(
+        IndexedFileItem item,
+        Dictionary<string, List<IndexedFileItem>> pathRootIndex)
+    {
+        if (TryGetPathRootKey(item.Path, out var rootKey))
+        {
+            AddToListIndex(pathRootIndex, rootKey, item);
+        }
+    }
+
     private static void AddToNameLookupBuilders(
         IndexedFileItem item,
+        Dictionary<char, List<IndexedFileItem>> startCharacterIndex,
+        Dictionary<NameBigram, List<IndexedFileItem>> startBigramIndex,
         Dictionary<char, List<IndexedFileItem>> characterIndex,
+        Dictionary<NameBigram, List<IndexedFileItem>> bigramIndex,
         Dictionary<NameGram, List<IndexedFileItem>> trigramIndex)
     {
+        AddToNameStartLookupBuilders(item, startCharacterIndex, startBigramIndex);
+        AddToNameCharacterLookupBuilders(item, characterIndex);
+        AddToNameBigramLookupBuilders(item, bigramIndex);
+        AddToNameTrigramLookupBuilders(item, trigramIndex);
+    }
+
+    private static void AddToNameStartLookupBuilders(
+        IndexedFileItem item,
+        Dictionary<char, List<IndexedFileItem>> startCharacterIndex,
+        Dictionary<NameBigram, List<IndexedFileItem>> startBigramIndex)
+    {
         HashSet<char>? characters = null;
-        AddNameCharacterKeys(item.SearchName, ref characters);
-        AddNameCharacterKeys(item.SearchFileName, ref characters);
-        AddNameCharacterKeys(item.SearchNameWithoutExtension, ref characters);
+        HashSet<NameBigram>? bigrams = null;
+        AddNameStartKeys(item, ref characters, ref bigrams);
+        if (characters is not null)
+        {
+            foreach (var character in characters)
+            {
+                AddToListIndex(startCharacterIndex, character, item);
+            }
+        }
+
+        if (bigrams is not null)
+        {
+            foreach (var bigram in bigrams)
+            {
+                AddToListIndex(startBigramIndex, bigram, item);
+            }
+        }
+    }
+
+    private static void AddToNameCharacterLookupBuilders(
+        IndexedFileItem item,
+        Dictionary<char, List<IndexedFileItem>> characterIndex)
+    {
+        HashSet<char>? characters = null;
+        AddNameCharacterKeys(item, ref characters);
         if (characters is not null)
         {
             foreach (var character in characters)
@@ -1119,11 +2508,31 @@ public sealed partial class LocalFileSearchService
                 AddToListIndex(characterIndex, character, item);
             }
         }
+    }
 
+    private static void AddToNameBigramLookupBuilders(
+        IndexedFileItem item,
+        Dictionary<NameBigram, List<IndexedFileItem>> bigramIndex)
+    {
+        HashSet<NameBigram>? keys = null;
+        AddNameBigramKeys(item, ref keys);
+        if (keys is null)
+        {
+            return;
+        }
+
+        foreach (var key in keys)
+        {
+            AddToListIndex(bigramIndex, key, item);
+        }
+    }
+
+    private static void AddToNameTrigramLookupBuilders(
+        IndexedFileItem item,
+        Dictionary<NameGram, List<IndexedFileItem>> trigramIndex)
+    {
         HashSet<NameGram>? keys = null;
-        AddNameTrigramKeys(item.SearchName, ref keys);
-        AddNameTrigramKeys(item.SearchFileName, ref keys);
-        AddNameTrigramKeys(item.SearchNameWithoutExtension, ref keys);
+        AddNameTrigramKeys(item, ref keys);
         if (keys is null)
         {
             return;
@@ -1150,12 +2559,29 @@ public sealed partial class LocalFileSearchService
         items.Add(item);
     }
 
-    private void AddToNameTrigramIndex(IndexedFileItem item)
+    private void AddToNameAccelerationIndexes(IndexedFileItem item)
     {
+        HashSet<char>? startCharacters = null;
+        HashSet<NameBigram>? startBigrams = null;
+        AddNameStartKeys(item, ref startCharacters, ref startBigrams);
+        if (startCharacters is not null)
+        {
+            foreach (var character in startCharacters)
+            {
+                _nameStartCharacterIndex.GetOrAdd(character, static _ => new ConcurrentBag<IndexedFileItem>()).Add(item);
+            }
+        }
+
+        if (startBigrams is not null)
+        {
+            foreach (var key in startBigrams)
+            {
+                _nameStartBigramIndex.GetOrAdd(key, static _ => new ConcurrentBag<IndexedFileItem>()).Add(item);
+            }
+        }
+
         HashSet<char>? characters = null;
-        AddNameCharacterKeys(item.SearchName, ref characters);
-        AddNameCharacterKeys(item.SearchFileName, ref characters);
-        AddNameCharacterKeys(item.SearchNameWithoutExtension, ref characters);
+        AddNameCharacterKeys(item, ref characters);
         if (characters is not null)
         {
             foreach (var character in characters)
@@ -1164,10 +2590,18 @@ public sealed partial class LocalFileSearchService
             }
         }
 
+        HashSet<NameBigram>? bigramKeys = null;
+        AddNameBigramKeys(item, ref bigramKeys);
+        if (bigramKeys is not null)
+        {
+            foreach (var key in bigramKeys)
+            {
+                _nameBigramIndex.GetOrAdd(key, static _ => new ConcurrentBag<IndexedFileItem>()).Add(item);
+            }
+        }
+
         HashSet<NameGram>? keys = null;
-        AddNameTrigramKeys(item.SearchName, ref keys);
-        AddNameTrigramKeys(item.SearchFileName, ref keys);
-        AddNameTrigramKeys(item.SearchNameWithoutExtension, ref keys);
+        AddNameTrigramKeys(item, ref keys);
         if (keys is null)
         {
             return;
@@ -1176,6 +2610,66 @@ public sealed partial class LocalFileSearchService
         foreach (var key in keys)
         {
             _nameTrigramIndex.GetOrAdd(key, static _ => new ConcurrentBag<IndexedFileItem>()).Add(item);
+        }
+    }
+
+    private static void AddNameStartKeys(
+        IndexedFileItem item,
+        ref HashSet<char>? characters,
+        ref HashSet<NameBigram>? bigrams)
+    {
+        AddNameStartKeys(item.SearchName, ref characters, ref bigrams);
+        if (!item.SearchFileName.Equals(item.SearchName, StringComparison.Ordinal))
+        {
+            AddNameStartKeys(item.SearchFileName, ref characters, ref bigrams);
+        }
+
+        if (!item.SearchNameWithoutExtension.Equals(item.SearchName, StringComparison.Ordinal)
+            && !item.SearchNameWithoutExtension.Equals(item.SearchFileName, StringComparison.Ordinal))
+        {
+            AddNameStartKeys(item.SearchNameWithoutExtension, ref characters, ref bigrams);
+        }
+    }
+
+    private static void AddNameStartKeys(
+        string text,
+        ref HashSet<char>? characters,
+        ref HashSet<NameBigram>? bigrams)
+    {
+        if (text.Length == 0)
+        {
+            return;
+        }
+
+        for (var index = 0; index < text.Length; index++)
+        {
+            if (index > 0 && !IsWordSeparator(text[index - 1]))
+            {
+                continue;
+            }
+
+            characters ??= [];
+            characters.Add(text[index]);
+            if (index < text.Length - 1)
+            {
+                bigrams ??= [];
+                bigrams.Add(new NameBigram(text[index], text[index + 1]));
+            }
+        }
+    }
+
+    private static void AddNameCharacterKeys(IndexedFileItem item, ref HashSet<char>? keys)
+    {
+        AddNameCharacterKeys(item.SearchName, ref keys);
+        if (!item.SearchFileName.Equals(item.SearchName, StringComparison.Ordinal))
+        {
+            AddNameCharacterKeys(item.SearchFileName, ref keys);
+        }
+
+        if (!item.SearchNameWithoutExtension.Equals(item.SearchName, StringComparison.Ordinal)
+            && !item.SearchNameWithoutExtension.Equals(item.SearchFileName, StringComparison.Ordinal))
+        {
+            AddNameCharacterKeys(item.SearchNameWithoutExtension, ref keys);
         }
     }
 
@@ -1193,6 +2687,50 @@ public sealed partial class LocalFileSearchService
         }
     }
 
+    private static void AddNameBigramKeys(IndexedFileItem item, ref HashSet<NameBigram>? keys)
+    {
+        AddNameBigramKeys(item.SearchName, ref keys);
+        if (!item.SearchFileName.Equals(item.SearchName, StringComparison.Ordinal))
+        {
+            AddNameBigramKeys(item.SearchFileName, ref keys);
+        }
+
+        if (!item.SearchNameWithoutExtension.Equals(item.SearchName, StringComparison.Ordinal)
+            && !item.SearchNameWithoutExtension.Equals(item.SearchFileName, StringComparison.Ordinal))
+        {
+            AddNameBigramKeys(item.SearchNameWithoutExtension, ref keys);
+        }
+    }
+
+    private static void AddNameBigramKeys(string text, ref HashSet<NameBigram>? keys)
+    {
+        if (text.Length < 2)
+        {
+            return;
+        }
+
+        keys ??= [];
+        for (var index = 0; index <= text.Length - 2; index++)
+        {
+            keys.Add(new NameBigram(text[index], text[index + 1]));
+        }
+    }
+
+    private static void AddNameTrigramKeys(IndexedFileItem item, ref HashSet<NameGram>? keys)
+    {
+        AddNameTrigramKeys(item.SearchName, ref keys);
+        if (!item.SearchFileName.Equals(item.SearchName, StringComparison.Ordinal))
+        {
+            AddNameTrigramKeys(item.SearchFileName, ref keys);
+        }
+
+        if (!item.SearchNameWithoutExtension.Equals(item.SearchName, StringComparison.Ordinal)
+            && !item.SearchNameWithoutExtension.Equals(item.SearchFileName, StringComparison.Ordinal))
+        {
+            AddNameTrigramKeys(item.SearchNameWithoutExtension, ref keys);
+        }
+    }
+
     private static void AddNameTrigramKeys(string text, ref HashSet<NameGram>? keys)
     {
         if (text.Length < 3)
@@ -1204,6 +2742,14 @@ public sealed partial class LocalFileSearchService
         for (var index = 0; index <= text.Length - 3; index++)
         {
             keys.Add(new NameGram(text[index], text[index + 1], text[index + 2]));
+        }
+    }
+
+    private void AddToPathRootIndex(IndexedFileItem item)
+    {
+        if (TryGetPathRootKey(item.Path, out var rootKey))
+        {
+            _pathRootIndex.GetOrAdd(rootKey, static _ => new ConcurrentBag<IndexedFileItem>()).Add(item);
         }
     }
 
@@ -1276,9 +2822,19 @@ public sealed partial class LocalFileSearchService
             return FolderKind;
         }
 
-        return LaunchableExtensions.Contains(Path.GetExtension(path), StringComparer.OrdinalIgnoreCase)
+        return IsLaunchablePath(path, isDirectory)
             ? AppKind
             : FileKind;
+    }
+
+    private static bool IsLaunchablePath(string path, bool isDirectory)
+    {
+        return IsLaunchableName(path, isDirectory);
+    }
+
+    private static bool IsLaunchableName(string name, bool isDirectory)
+    {
+        return !isDirectory && LaunchableExtensions.Contains(Path.GetExtension(name), StringComparer.OrdinalIgnoreCase);
     }
 
     private static string DisplayName(string path)
@@ -1431,6 +2987,21 @@ public sealed partial class LocalFileSearchService
     }
 
     [MemoryPackable]
+    private sealed partial class AppMemoryPackedFileIndexCache
+    {
+        public int Version { get; set; }
+        public long UpdatedAtUnixMilliseconds { get; set; }
+        public AppMemoryPackedFileIndexItem[] Items { get; set; } = [];
+    }
+
+    [MemoryPackable]
+    private sealed partial class AppMemoryPackedFileIndexItem
+    {
+        public string Path { get; set; } = string.Empty;
+        public bool IsDirectory { get; set; }
+    }
+
+    [MemoryPackable]
     private sealed partial class MemoryPackedFileIndexCache
     {
         public int Version { get; set; }
@@ -1444,6 +3015,21 @@ public sealed partial class LocalFileSearchService
     {
         public int DirectoryIndex { get; set; }
         public string Name { get; set; } = string.Empty;
+        public bool IsDirectory { get; set; }
+    }
+
+    [MemoryPackable]
+    private sealed partial class FastMemoryPackedFileIndexCache
+    {
+        public int Version { get; set; }
+        public long UpdatedAtUnixMilliseconds { get; set; }
+        public FastMemoryPackedFileIndexItem[] Items { get; set; } = [];
+    }
+
+    [MemoryPackable]
+    private sealed partial class FastMemoryPackedFileIndexItem
+    {
+        public string Path { get; set; } = string.Empty;
         public bool IsDirectory { get; set; }
     }
 
@@ -1514,6 +3100,8 @@ public sealed partial class LocalFileSearchService
         string SearchName,
         string SearchFileName,
         string SearchNameWithoutExtension);
+
+    private readonly record struct NameBigram(char First, char Second);
 
     private readonly record struct NameGram(char First, char Second, char Third);
 
@@ -2053,6 +3641,7 @@ public sealed record LocalFileIndexProgress(
     int SkippedCount,
     string CurrentRoot,
     bool IsLoadingCache,
+    bool IsCompletingCacheLoad,
     long CacheBytesRead,
     long CacheBytesTotal)
 {
@@ -2065,8 +3654,13 @@ public sealed record LocalFileIndexProgress(
                 return 1;
             }
 
-            if (IsLoadingCache)
+            if (IsLoadingCache || IsCompletingCacheLoad)
             {
+                if (IsCompletingCacheLoad)
+                {
+                    return IndexedCount > 0 ? 0.5 : 0.1;
+                }
+
                 if (CacheBytesTotal > 0)
                 {
                     return Math.Clamp(CacheBytesRead / (double)CacheBytesTotal, 0.02, 0.98);

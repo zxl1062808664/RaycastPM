@@ -28,7 +28,8 @@
                                 CornerRadius="4"
                                 Padding="16,0">
                             <ContentPresenter HorizontalAlignment="Center"
-                                              VerticalAlignment="Center" />
+                                              VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsChecked" Value="True">
@@ -103,7 +104,8 @@
                                 CornerRadius="5">
                             <ContentPresenter HorizontalAlignment="Stretch"
                                               VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}" />
+                                              Margin="{TemplateBinding Padding}"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -142,7 +144,8 @@
                                 CornerRadius="4">
                             <ContentPresenter HorizontalAlignment="Center"
                                               VerticalAlignment="Center"
-                                              Margin="{TemplateBinding Padding}" />
+                                              Margin="{TemplateBinding Padding}"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
                         </Border>
                         <ControlTemplate.Triggers>
                             <Trigger Property="IsMouseOver" Value="True">
@@ -159,6 +162,14 @@
                     </ControlTemplate>
                 </Setter.Value>
             </Setter>
+        </Style>
+
+        <Style x:Key="HotKeyToggleStyle" TargetType="ToggleButton" BasedOn="{StaticResource ToolbarToggleButtonStyle}">
+            <Setter Property="MinWidth" Value="52" />
+            <Setter Property="Width" Value="52" />
+            <Setter Property="Height" Value="30" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="Margin" Value="0,0,6,0" />
         </Style>
 
         <Style x:Key="ListMetaStyle" TargetType="TextBlock">
@@ -444,7 +455,7 @@
                     <Grid Margin="18,0">
                         <Grid.ColumnDefinitions>
                             <ColumnDefinition Width="*" />
-                            <ColumnDefinition Width="190" />
+                            <ColumnDefinition Width="220" />
                         </Grid.ColumnDefinitions>
                         <Border Height="38"
                                 Background="{StaticResource PanelInsetBrush}"
@@ -484,6 +495,9 @@
                             <ComboBoxItem Content="全部类型" Tag="All" />
                             <ComboBoxItem Content="文本" Tag="Text" />
                             <ComboBoxItem Content="图片" Tag="Image" />
+                            <ComboBoxItem Content="文件" Tag="File" />
+                            <ComboBoxItem Content="链接" Tag="Link" />
+                            <ComboBoxItem Content="颜色" Tag="Color" />
                         </ComboBox>
                     </Grid>
                 </Border>
@@ -994,7 +1008,9 @@
                             </Grid.Style>
                             <Grid.RowDefinitions>
                                 <RowDefinition Height="Auto" />
-                                <RowDefinition Height="16" />
+                                <RowDefinition Height="14" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="14" />
                                 <RowDefinition Height="*" />
                                 <RowDefinition Height="28" />
                             </Grid.RowDefinitions>
@@ -1005,7 +1021,73 @@
                                      FontWeight="SemiBold"
                                      Padding="0"
                                      VerticalContentAlignment="Center" />
-                            <TextBox Grid.Row="2"
+                            <Grid Grid.Row="2">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+
+                                <ListBox ItemsSource="{Binding SelectedNote.Images}"
+                                         SelectedItem="{Binding SelectedNoteImage}"
+                                         Height="92"
+                                         Background="Transparent"
+                                         BorderThickness="0"
+                                         Padding="0"
+                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                         ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                    <ListBox.Style>
+                                        <Style TargetType="ListBox">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding SelectedNote.Images.Count}" Value="0">
+                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </ListBox.Style>
+                                    <ListBox.ItemsPanel>
+                                        <ItemsPanelTemplate>
+                                            <StackPanel Orientation="Horizontal" />
+                                        </ItemsPanelTemplate>
+                                    </ListBox.ItemsPanel>
+                                    <ListBox.ItemTemplate>
+                                        <DataTemplate>
+                                            <Border Width="118"
+                                                    Height="86"
+                                                    Background="{StaticResource PanelInsetBrush}"
+                                                    BorderBrush="{StaticResource BorderBrushSoft}"
+                                                    BorderThickness="1"
+                                                    CornerRadius="4"
+                                                    Margin="0,0,10,0">
+                                                <Image Source="{Binding ImageBytes, Converter={StaticResource ImageBytesToSourceConverter}}"
+                                                       Stretch="Uniform"
+                                                       Margin="5" />
+                                            </Border>
+                                        </DataTemplate>
+                                    </ListBox.ItemTemplate>
+                                </ListBox>
+
+                                <Button Grid.Column="1"
+                                        Content="粘贴图片"
+                                        Style="{StaticResource ToolbarButtonStyle}"
+                                        Command="{Binding AddNoteImageFromClipboardCommand}"
+                                        Margin="12,0,8,0"
+                                        VerticalAlignment="Top" />
+                                <Button Grid.Column="2"
+                                        Content="添加图片"
+                                        Style="{StaticResource ToolbarButtonStyle}"
+                                        Command="{Binding AddNoteImageFromFileCommand}"
+                                        Margin="0,0,8,0"
+                                        VerticalAlignment="Top" />
+                                <Button Grid.Column="3"
+                                        Content="删除图片"
+                                        Style="{StaticResource ToolbarButtonStyle}"
+                                        Command="{Binding DeleteSelectedNoteImageCommand}"
+                                        VerticalAlignment="Top" />
+                            </Grid>
+                            <TextBox Grid.Row="4"
                                      Text="{Binding SelectedNote.Body, UpdateSourceTrigger=PropertyChanged}"
                                      AcceptsReturn="True"
                                      TextWrapping="Wrap"
@@ -1015,7 +1097,7 @@
                                      FontSize="{Binding NoteFontSize}"
                                      Padding="0"
                                      VerticalContentAlignment="Top" />
-                            <TextBlock Grid.Row="3"
+                            <TextBlock Grid.Row="5"
                                        Text="{Binding SelectedNote.UpdatedAt, StringFormat=最后更新 {0:yyyy-MM-dd HH:mm}}"
                                        Style="{StaticResource ListMetaStyle}"
                                        VerticalAlignment="Bottom" />
@@ -1075,7 +1157,8 @@
                                     <Border x:Name="Root"
                                             Background="{TemplateBinding Background}"
                                             Padding="{TemplateBinding Padding}">
-                                        <ContentPresenter VerticalAlignment="Center" />
+                                        <ContentPresenter VerticalAlignment="Center"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
                                     </Border>
                                     <ControlTemplate.Triggers>
                                         <Trigger Property="IsHighlighted" Value="True">
@@ -1139,7 +1222,8 @@
                                                           IsHitTestVisible="False"
                                                           Content="{TemplateBinding SelectionBoxItem}"
                                                           ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
-                                                          ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}" />
+                                                          ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                                          TextElement.Foreground="{TemplateBinding Foreground}" />
 
                                         <Popup x:Name="PART_Popup"
                                                Placement="Bottom"
@@ -1216,11 +1300,13 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="64" />
                                     <RowDefinition Height="64" />
+                                    <RowDefinition Height="86" />
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
                                     <ColumnDefinition Width="280" />
                                     <ColumnDefinition Width="120" />
                                     <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="98" />
                                 </Grid.ColumnDefinitions>
 
                                 <TextBlock Text="开机自启"
@@ -1249,9 +1335,9 @@
                                     </TextBlock>
                                 </ToggleButton>
 
-                                <Border Grid.Row="1" Grid.ColumnSpan="3" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
+                                <Border Grid.Row="1" Grid.ColumnSpan="4" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
                                 <TextBlock Grid.Row="1"
-                                           Text="每天首次启动自动扫描"
+                                           Text="启动后自动更新索引"
                                            FontSize="17"
                                            FontWeight="SemiBold"
                                            VerticalAlignment="Center"
@@ -1277,63 +1363,125 @@
                                         </TextBlock.Style>
                                     </TextBlock>
                                 </ToggleButton>
+
+                                <Border Grid.Row="2" Grid.ColumnSpan="4" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
+                                <TextBlock Grid.Row="2"
+                                           Text="日志输出"
+                                           FontSize="17"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Margin="14,0,0,0" />
+                                <ToggleButton Grid.Row="2"
+                                              Grid.Column="1"
+                                              Width="84"
+                                              HorizontalAlignment="Left"
+                                              VerticalAlignment="Center"
+                                              Style="{StaticResource ToolbarToggleButtonStyle}"
+                                              IsChecked="{Binding LoggingEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                    <TextBlock>
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="关闭" />
+                                                <Setter Property="Foreground" Value="{StaticResource SettingsTextBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Text" Value="开启" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </ToggleButton>
+                                <TextBox Grid.Row="2"
+                                         Grid.Column="2"
+                                         Height="34"
+                                         VerticalAlignment="Center"
+                                         Text="{Binding LogDirectory, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
+                                         IsEnabled="{Binding LoggingEnabled}" />
+                                <Button Grid.Row="2"
+                                        Grid.Column="3"
+                                        Content="浏览"
+                                        Style="{StaticResource ToolbarButtonStyle}"
+                                        HorizontalAlignment="Right"
+                                        VerticalAlignment="Center"
+                                        Command="{Binding BrowseLogDirectoryCommand}"
+                                        IsEnabled="{Binding LoggingEnabled}" />
                             </Grid>
                         </Border>
 
                         <TextBlock Text="快捷键" Style="{StaticResource SectionTitleStyle}" />
                         <Border Style="{StaticResource CardStyle}">
-                            <Grid>
-                                <Grid.RowDefinitions>
-                                    <RowDefinition Height="64" />
-                                    <RowDefinition Height="64" />
-                                    <RowDefinition Height="64" />
-                                    <RowDefinition Height="64" />
-                                </Grid.RowDefinitions>
-                                <Grid.ColumnDefinitions>
-                                    <ColumnDefinition Width="140" />
-                                    <ColumnDefinition Width="280" />
-                                    <ColumnDefinition Width="54" />
-                                    <ColumnDefinition Width="*" />
-                                    <ColumnDefinition Width="118" />
-                                </Grid.ColumnDefinitions>
+                            <ItemsControl ItemsSource="{Binding HotKeyEditors}">
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Height="64">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140" />
+                                                <ColumnDefinition Width="248" />
+                                                <ColumnDefinition Width="96" />
+                                                <ColumnDefinition Width="54" />
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="118" />
+                                            </Grid.ColumnDefinitions>
 
-                                <TextBlock Text="导航" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" />
-                                <Border Grid.Column="1" Height="38" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="8" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Settings.LauncherHotKey}" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                </Border>
-                                <Button Grid.Column="2" Content="↻" Style="{StaticResource IconButtonStyle}" />
-                                <Button Grid.Column="4" Content="▣  打开" Style="{StaticResource ToolbarButtonStyle}" Command="{Binding ShowLauncherCommand}" />
-
-                                <Border Grid.Row="1" Grid.ColumnSpan="5" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
-                                <TextBlock Grid.Row="1" Text="剪贴板" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" />
-                                <Border Grid.Row="1" Grid.Column="1" Height="38" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="8" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Settings.ClipboardHotKey}" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                </Border>
-                                <Button Grid.Row="1" Grid.Column="2" Content="↻" Style="{StaticResource IconButtonStyle}" />
-                                <Button Grid.Row="1" Grid.Column="4" Content="▣  打开" Style="{StaticResource ToolbarButtonStyle}" Command="{Binding ShowClipboardCommand}" />
-
-                                <Border Grid.Row="2" Grid.ColumnSpan="5" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
-                                <TextBlock Grid.Row="2" Text="记事本" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" />
-                                <Border Grid.Row="2" Grid.Column="1" Height="38" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="8" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Settings.NotesHotKey}" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                </Border>
-                                <Button Grid.Row="2" Grid.Column="2" Content="↻" Style="{StaticResource IconButtonStyle}" />
-                                <Button Grid.Row="2" Grid.Column="4" Content="▣  打开" Style="{StaticResource ToolbarButtonStyle}" Command="{Binding ShowNotesCommand}" />
-
-                                <Border Grid.Row="3" Grid.ColumnSpan="5" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
-                                <TextBlock Grid.Row="3" Text="设置" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" />
-                                <Border Grid.Row="3" Grid.Column="1" Height="38" Background="{StaticResource PanelInsetBrush}" BorderBrush="{StaticResource BorderBrushSoft}" BorderThickness="1" CornerRadius="8" VerticalAlignment="Center">
-                                    <TextBlock Text="{Binding Settings.SettingsHotKey}" FontSize="17" FontWeight="SemiBold" HorizontalAlignment="Center" VerticalAlignment="Center" />
-                                </Border>
-                                <Button Grid.Row="3" Grid.Column="2" Content="↻" Style="{StaticResource IconButtonStyle}" />
-                                <Button Grid.Row="3" Grid.Column="4" Content="▣  打开" Style="{StaticResource ToolbarButtonStyle}" Command="{Binding ShowSettingsCommand}" />
-                            </Grid>
+                                            <TextBlock Text="{Binding Label}"
+                                                       FontSize="17"
+                                                       FontWeight="SemiBold"
+                                                       VerticalAlignment="Center"
+                                                       Margin="14,0,0,0" />
+                                            <StackPanel Grid.Column="1"
+                                                        Orientation="Horizontal"
+                                                        VerticalAlignment="Center">
+                                                <ToggleButton Content="Ctrl"
+                                                              Style="{StaticResource HotKeyToggleStyle}"
+                                                              IsChecked="{Binding UseControl, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                <ToggleButton Content="Alt"
+                                                              Style="{StaticResource HotKeyToggleStyle}"
+                                                              IsChecked="{Binding UseAlt, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                <ToggleButton Content="Shift"
+                                                              Style="{StaticResource HotKeyToggleStyle}"
+                                                              IsChecked="{Binding UseShift, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                                <ToggleButton Content="Win"
+                                                              Style="{StaticResource HotKeyToggleStyle}"
+                                                              IsChecked="{Binding UseWin, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}" />
+                                            </StackPanel>
+                                            <ComboBox Grid.Column="2"
+                                                      ItemsSource="{Binding KeyOptions}"
+                                                      SelectedItem="{Binding Key, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                      Width="82"
+                                                      VerticalAlignment="Center" />
+                                            <Button Grid.Column="3"
+                                                    Content="↻"
+                                                    Style="{StaticResource IconButtonStyle}"
+                                                    Command="{Binding ResetCommand}" />
+                                            <TextBlock Grid.Column="4"
+                                                       Text="{Binding DisplayText}"
+                                                       FontSize="16"
+                                                       FontWeight="SemiBold"
+                                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                                       TextTrimming="CharacterEllipsis"
+                                                       Margin="8,0"
+                                                       VerticalAlignment="Center" />
+                                            <Button Grid.Column="5"
+                                                    Content="▣  打开"
+                                                    Style="{StaticResource ToolbarButtonStyle}"
+                                                    Command="{Binding OpenCommand}" />
+                                            <Border Grid.ColumnSpan="6"
+                                                    Height="1"
+                                                    Background="#383838"
+                                                    VerticalAlignment="Bottom"
+                                                    Margin="14,0" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
                         </Border>
 
                         <TextBlock Text="导航" Style="{StaticResource SectionTitleStyle}" />
                         <Border Style="{StaticResource CardStyle}">
                             <Grid>
                                 <Grid.RowDefinitions>
+                                    <RowDefinition Height="64" />
                                     <RowDefinition Height="64" />
                                     <RowDefinition Height="64" />
                                     <RowDefinition Height="64" />
@@ -1357,7 +1505,16 @@
                                         Command="{Binding RebuildFileIndexCommand}"
                                         HorizontalAlignment="Left" />
                                 <Border Grid.Row="2" Grid.ColumnSpan="3" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
-                                <Button Grid.Row="2" Content="↻  刷新汇率" Style="{StaticResource ToolbarButtonStyle}" Command="{Binding RefreshRatesCommand}" Margin="14,0,0,0" HorizontalAlignment="Left" />
+                                <TextBlock Grid.Row="2" Text="缓存数据" FontSize="17" FontWeight="SemiBold" VerticalAlignment="Center" Margin="14,0,0,0" />
+                                <Button Grid.Row="2"
+                                        Grid.Column="1"
+                                        Grid.ColumnSpan="2"
+                                        Content="清除导航缓存数据"
+                                        Style="{StaticResource ToolbarButtonStyle}"
+                                        Command="{Binding ClearCacheDataCommand}"
+                                        HorizontalAlignment="Left" />
+                                <Border Grid.Row="3" Grid.ColumnSpan="3" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
+                                <Button Grid.Row="3" Content="↻  刷新汇率" Style="{StaticResource ToolbarButtonStyle}" Command="{Binding RefreshRatesCommand}" Margin="14,0,0,0" HorizontalAlignment="Left" />
                             </Grid>
                         </Border>
 

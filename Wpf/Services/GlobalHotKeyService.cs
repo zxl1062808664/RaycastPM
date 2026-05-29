@@ -88,6 +88,13 @@ public sealed class GlobalHotKeyService : IDisposable
 
     private static WpfKey ParseKey(string key)
     {
+        if (key.Length == 1 && char.IsDigit(key[0]))
+        {
+            return Enum.TryParse<WpfKey>($"D{key}", true, out var digitKey)
+                ? digitKey
+                : WpfKey.None;
+        }
+
         if (Enum.TryParse<WpfKey>(key, true, out var parsed))
         {
             return parsed;

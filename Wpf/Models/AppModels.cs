@@ -1,3 +1,4 @@
+using System.Collections.ObjectModel;
 using System.ComponentModel;
 using System.Runtime.CompilerServices;
 
@@ -20,7 +21,10 @@ public enum SettingsPage
 public enum ClipboardItemKind
 {
     Text,
-    Image
+    Image,
+    File,
+    Link,
+    Color
 }
 
 public sealed class AppSettings
@@ -31,6 +35,8 @@ public sealed class AppSettings
     public HotKeyGesture SettingsHotKey { get; set; } = new(ModifierKeys.Control | ModifierKeys.Alt, "S");
     public bool StartWithWindows { get; set; }
     public bool AutoScanOnDailyFirstLaunch { get; set; } = true;
+    public bool LoggingEnabled { get; set; } = true;
+    public string LogDirectory { get; set; } = string.Empty;
     public double NoteFontSize { get; set; } = 18;
     public List<string> CustomAppDirectories { get; set; } = [];
     public Dictionary<string, double> ExchangeRatesToCny { get; set; } = new(StringComparer.OrdinalIgnoreCase)
@@ -61,8 +67,15 @@ public sealed record HotKeyGesture(ModifierKeys Modifiers, string Key)
         if (Modifiers.HasFlag(ModifierKeys.Alt)) parts.Add("Alt");
         if (Modifiers.HasFlag(ModifierKeys.Shift)) parts.Add("Shift");
         if (Modifiers.HasFlag(ModifierKeys.Win)) parts.Add("Win");
-        parts.Add(Key);
+        parts.Add(DisplayKey(Key));
         return string.Join("+", parts);
+    }
+
+    private static string DisplayKey(string key)
+    {
+        return key.Length == 2 && key[0] is 'D' or 'd' && char.IsDigit(key[1])
+            ? key[1].ToString()
+            : key;
     }
 }
 
@@ -94,7 +107,14 @@ public sealed class ClipboardEntry
     public string? Source { get; set; }
 
     public string DisplayText => string.IsNullOrWhiteSpace(Content) ? KindTitle : Content.Trim();
-    public string KindTitle => Kind == ClipboardItemKind.Image ? "图片" : "文本";
+    public string KindTitle => Kind switch
+    {
+        ClipboardItemKind.Image => "图片",
+        ClipboardItemKind.File => "文件",
+        ClipboardItemKind.Link => "链接",
+        ClipboardItemKind.Color => "颜色",
+        _ => "文本"
+    };
 }
 
 public sealed class NoteItem : INotifyPropertyChanged
@@ -118,6 +138,7 @@ public sealed class NoteItem : INotifyPropertyChanged
         set => SetProperty(ref _body, value);
     }
 
+    public ObservableCollection<NoteImageItem> Images { get; set; } = [];
     public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.Now;
     public DateTimeOffset UpdatedAt
     {
@@ -135,6 +156,13 @@ public sealed class NoteItem : INotifyPropertyChanged
         field = value;
         PropertyChanged?.Invoke(this, new PropertyChangedEventArgs(propertyName));
     }
+}
+
+public sealed class NoteImageItem
+{
+    public Guid Id { get; init; } = Guid.NewGuid();
+    public byte[] ImageBytes { get; set; } = [];
+    public DateTimeOffset CreatedAt { get; init; } = DateTimeOffset.Now;
 }
 
 public sealed class AppState

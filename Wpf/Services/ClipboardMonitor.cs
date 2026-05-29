@@ -45,6 +45,7 @@ public sealed class ClipboardMonitor
 
     public void RememberImage(BitmapSource image)
     {
+        image = ClipboardImageNormalizer.RestoreOpaqueAlphaIfFullyTransparent(image);
         var bytes = EncodePng(image);
         _lastImageFingerprint = Convert.ToHexString(SHA256.HashData(bytes));
         _normalizingImageFingerprint = null;
@@ -61,9 +62,31 @@ public sealed class ClipboardMonitor
                 return;
             }
 
+            var data = WpfClipboard.GetDataObject();
+            var files = TryGetClipboardFiles(data);
+            if (files.Count > 0)
+            {
+                var content = ClipboardClassifier.NormalizeFileContent(files);
+                if (!string.IsNullOrWhiteSpace(content) && content != _lastText)
+                {
+                    _lastText = content;
+                    _lastImageFingerprint = null;
+                    _normalizingImageFingerprint = null;
+                    ClipboardChanged?.Invoke(this, new ClipboardEntry
+                    {
+                        Kind = ClipboardItemKind.File,
+                        Content = content,
+                        Source = "Windows"
+                    });
+                }
+
+                return;
+            }
+
             var image = TryGetClipboardImage(out var needsNormalization);
             if (image is not null)
             {
+                image = ClipboardImageNormalizer.RestoreOpaqueAlphaIfFullyTransparent(image);
                 var bytes = EncodePng(image);
                 var fingerprint = Convert.ToHexString(SHA256.HashData(bytes));
 
@@ -95,15 +118,16 @@ public sealed class ClipboardMonitor
             if (WpfClipboard.ContainsText())
             {
                 var text = WpfClipboard.GetText();
-                if (!string.IsNullOrWhiteSpace(text) && text != _lastText)
+                var content = text.Trim();
+                if (!string.IsNullOrWhiteSpace(content) && content != _lastText)
                 {
-                    _lastText = text;
+                    _lastText = content;
                     _lastImageFingerprint = null;
                     _normalizingImageFingerprint = null;
                     ClipboardChanged?.Invoke(this, new ClipboardEntry
                     {
-                        Kind = ClipboardItemKind.Text,
-                        Content = text.Trim(),
+                        Kind = ClipboardClassifier.ClassifyText(content),
+                        Content = content,
                         Source = "Windows"
                     });
                 }
@@ -408,29 +432,9 @@ public sealed class ClipboardMonitor
 
     private static IEnumerable<string> TryGetClipboardImageFiles(WpfDataObject data)
     {
-        if (GetData(data, WpfDataFormats.FileDrop) is string[] droppedFiles)
+        foreach (var file in TryGetClipboardFiles(data))
         {
-            foreach (var file in droppedFiles)
-            {
-                yield return file;
-            }
-        }
-
-        foreach (var format in new[] { "FileNameW", "FileName" })
-        {
-            switch (GetData(data, format))
-            {
-                case string file:
-                    yield return file;
-                    break;
-                case string[] files:
-                    foreach (var file in files)
-                    {
-                        yield return file;
-                    }
-
-                    break;
-            }
+            yield return file;
         }
 
         foreach (var path in TryGetImageFilesFromHtml(GetData(data, WpfDataFormats.Html) as string))
@@ -441,6 +445,43 @@ public sealed class ClipboardMonitor
         foreach (var path in TryGetImageFilesFromHtml(GetData(data, "HTML Format") as string))
         {
             yield return path;
+        }
+    }
+
+    private static IReadOnlyList<string> TryGetClipboardFiles(WpfDataObject? data)
+    {
+        if (data is null)
+        {
+            return [];
+        }
+
+        var files = new List<string>();
+        AddClipboardFiles(files, GetData(data, WpfDataFormats.FileDrop));
+
+        foreach (var format in new[] { "FileNameW", "FileName" })
+        {
+            AddClipboardFiles(files, GetData(data, format));
+        }
+
+        return files
+            .Where(path => !string.IsNullOrWhiteSpace(path))
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToArray();
+    }
+
+    private static void AddClipboardFiles(List<string> files, object? value)
+    {
+        switch (value)
+        {
+            case string file:
+                files.Add(file);
+                break;
+            case string[] droppedFiles:
+                files.AddRange(droppedFiles);
+                break;
+            case System.Collections.Specialized.StringCollection fileCollection:
+                files.AddRange(fileCollection.Cast<string>());
+                break;
         }
     }
 

@@ -29,27 +29,36 @@ RaycastPM 是一个 Windows 桌面效率工具，当前主版本基于 .NET 10 +
 
 导航栏用于搜索和打开本机应用、文件、文件夹，也支持计算和汇率换算。
 
-当前规则：
+核心规则：
 
 - 应用优先展示
 - 文件优先于文件夹
 - 文件/文件夹按名称匹配，而不是优先匹配路径
 - 使用次数越多，排序越靠前
-- 支持类似 Everything 的搜索规则
-- 首次打开时按日期判断是否需要全盘扫描
-- 当天已经扫描过时，优先读取本地缓存
+- 支持类似 Everything 的组合搜索规则
+- 启动时优先加载轻量应用缓存，应用可用后立即进入可搜索状态
+- 完整文件/文件夹缓存会在后台异步加载，不阻塞主线程，也不额外显示加载提示
+- NTFS 磁盘优先通过 MFT 枚举建立索引，并用 USN Journal 补齐关闭期间的文件变化
+- 非 NTFS、网络盘或权限不足时自动回退到普通目录扫描和文件系统监听
 - 设置页提供手动重新扫描硬盘数据按钮
-- 扫描期间显示索引进度
+- 设置页提供清除导航缓存数据按钮，删除前需要二次确认
+- 首次无缓存或手动重建时显示索引进度
+
+用户搜索规则说明见：[`docs/navigation-search-rules.md`](docs/navigation-search-rules.md)。
 
 文件索引缓存保存在：
 
 ```text
-%AppData%\RaycastPM\file-index-cache.json
+%AppData%\RaycastPM\file-index-app-cache-v1.mpack
+%AppData%\RaycastPM\file-index-cache-v3.mpack
+%AppData%\RaycastPM\file-index-ntfs-journal.mpack
 ```
+
+其中 `file-index-app-cache-v1.mpack` 是启动快路径使用的应用缓存，`file-index-cache-v3.mpack` 是完整文件/文件夹索引缓存。旧版本的 `file-index-cache-v4.mpack` / `file-index-cache.json` / `file-index-cache.bin` / `file-index-cache*.mpack` 会在启动时兼容读取，读取成功后会自动迁移为当前 MemoryPack 缓存。
 
 ### 3. 剪贴板
 
-剪贴板模块会记录文本和图片剪贴板历史，支持搜索、筛选、删除和复制。
+剪贴板模块会记录文本、图片、文件、链接和颜色历史，支持搜索、分类筛选、删除和复制。
 
 当前交互：
 
@@ -57,6 +66,7 @@ RaycastPM 是一个 Windows 桌面效率工具，当前主版本基于 .NET 10 +
 - 复制后自动隐藏剪贴板窗口
 - 自动切回打开剪贴板前的窗口
 - 自动发送 `Ctrl+V` 完成粘贴
+- 文件类记录复制回去时会尽量还原为系统文件剪贴板
 
 剪贴板历史数量目前限制为最多 120 条。
 
@@ -68,6 +78,7 @@ RaycastPM 是一个 Windows 桌面效率工具，当前主版本基于 .NET 10 +
 - 删除记事
 - 记事搜索
 - 历史记事列表弹窗
+- 图片附件，支持从剪贴板粘贴或从文件添加
 - 手动输入字号
 - 字号滑块调整
 - 标题和正文自动保存
@@ -83,14 +94,16 @@ RaycastPM 是一个 Windows 桌面效率工具，当前主版本基于 .NET 10 +
 - 查看导航项使用次数
 - 清空使用统计
 - 重新扫描硬盘索引
+- 清除导航缓存数据，执行前需要二次确认
 - 开启或关闭 Windows 开机自启
+- 开启或关闭日志输出，并选择日志输出目录
 - 修改记事本字号
 - 查看数据目录
-- 支持设置快捷键打开
+- 可视化编辑导航、剪贴板、记事本和设置的全局快捷键
 
 ## 快捷键
 
-默认快捷键定义在 `Wpf/Models/AppModels.cs`：
+默认快捷键定义在 `Wpf/Models/AppModels.cs`，也可以在设置页用修饰键按钮和主键下拉框直接编辑：
 
 ```text
 导航：Ctrl + Alt + Space
@@ -98,6 +111,8 @@ RaycastPM 是一个 Windows 桌面效率工具，当前主版本基于 .NET 10 +
 记事本：Ctrl + Alt + N
 设置：Ctrl + Alt + S
 ```
+
+设置页的快捷键修改会立即保存，并重新注册全局快捷键；每一行的 `↻` 按钮会恢复该功能的默认组合。
 
 ## 目录结构
 
@@ -108,6 +123,8 @@ RaycastPM/
 ├─ MainWindow.xaml                  主窗口 UI
 ├─ MainWindow.xaml.cs               窗口行为、托盘、隐藏、自动粘贴
 ├─ RaycastPM.Wpf.csproj             WPF 项目文件
+├─ docs/
+│  └─ navigation-search-rules.md     导航搜索规则用户说明
 ├─ Wpf/
 │  ├─ Converters/                   XAML 绑定转换器
 │  ├─ Models/                       应用状态、设置、数据模型
@@ -121,8 +138,11 @@ RaycastPM/
 - `MainWindow.xaml`：定义主界面布局，包括导航、剪贴板、记事本、设置等区域。
 - `MainWindow.xaml.cs`：处理托盘菜单、窗口显示隐藏、全局快捷键打开后的焦点恢复、剪贴板双击自动粘贴。
 - `Wpf/ViewModels/MainViewModel.cs`：应用的主要状态中心，包含搜索、剪贴板、记事本、设置、汇率、使用次数等逻辑。
-- `Wpf/Services/LocalFileSearchService.cs`：本地文件索引和搜索服务，负责全盘扫描、缓存、查询解析和结果排序。
-- `Wpf/Services/ClipboardMonitor.cs`：监听系统剪贴板变化，支持文本和图片内容。
+- `Wpf/ViewModels/HotKeyEditorItem.cs`：设置页快捷键可视化编辑行的状态模型。
+- `Wpf/Services/LocalFileSearchService.cs`：本地文件索引和搜索服务，负责缓存优先启动、增量监听、全量重建、查询解析和结果排序。
+- `Wpf/Services/ClipboardMonitor.cs`：监听系统剪贴板变化，支持文本、图片、文件、链接和颜色内容。
+- `Wpf/Services/ClipboardClassifier.cs`：负责剪贴板文本内容的分类识别。
+- `Wpf/Services/AppDiagnostics.cs`：负责控制台、调试输出和可配置文件日志。
 - `Wpf/Services/GlobalHotKeyService.cs`：注册和处理 Windows 全局快捷键。
 - `Wpf/Services/StateStore.cs`：负责读取和保存 `%AppData%\RaycastPM\state.json`。
 - `Wpf/Services/CurrencyConverter.cs`：处理汇率查询和 10 分钟刷新逻辑。
@@ -138,8 +158,11 @@ RaycastPM/
 主要文件：
 
 ```text
-state.json              应用设置、剪贴板历史、记事内容、使用次数
-file-index-cache.json   本机文件索引缓存
+state.json                         应用设置、剪贴板历史、记事内容、使用次数
+file-index-app-cache-v1.mpack      导航启动快路径使用的应用索引缓存
+file-index-cache-v3.mpack          本机文件/文件夹完整索引缓存
+file-index-ntfs-journal.mpack      NTFS MFT/USN 文件号映射缓存
+logs\raycastpm-yyyyMMdd.log        可配置开启的运行日志
 ```
 
 ## 构建方式
@@ -180,8 +203,6 @@ dotnet run --project .\RaycastPM.Wpf.csproj
 
 ## 后续可优化方向
 
-- 设置页增加快捷键可视化编辑，而不是只展示默认值
 - 为文件索引增加更明确的排除目录配置
-- 为 Everything 风格搜索规则补一份用户说明
 - 为剪贴板历史增加固定/收藏功能
 - 为导航搜索、剪贴板和记事本补基础单元测试

@@ -2,6 +2,7 @@ using System.Globalization;
 using System.IO;
 using System.Windows.Data;
 using System.Windows.Media.Imaging;
+using RaycastPM.Services;
 
 namespace RaycastPM.Converters;
 
@@ -23,7 +24,7 @@ public sealed class ImageBytesToSourceConverter : IValueConverter
             image.StreamSource = stream;
             image.EndInit();
             image.Freeze();
-            return image;
+            return ClipboardImageNormalizer.RestoreOpaqueAlphaIfFullyTransparent(image);
         }
         catch
         {

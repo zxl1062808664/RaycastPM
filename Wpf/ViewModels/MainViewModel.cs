@@ -1,25 +1,92 @@
 using System.Collections.ObjectModel;
+using System.Collections.Specialized;
 using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
 using System.Windows;
+using System.Windows.Media.Imaging;
 using System.Windows.Threading;
 using RaycastPM.Models;
 using RaycastPM.Services;
+using WinFormsDialogResult = System.Windows.Forms.DialogResult;
+using WinFormsFolderBrowserDialog = System.Windows.Forms.FolderBrowserDialog;
 using WpfClipboard = System.Windows.Clipboard;
+using WpfMessageBox = System.Windows.MessageBox;
+using WpfOpenFileDialog = Microsoft.Win32.OpenFileDialog;
 
 namespace RaycastPM.ViewModels;
 
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private static readonly TimeSpan ExchangeRateRefreshInterval = TimeSpan.FromMinutes(10);
+    private static readonly IReadOnlyList<string> HotKeyOptions =
+    [
+        "Space",
+        "Tab",
+        "Escape",
+        "Back",
+        "A",
+        "B",
+        "C",
+        "D",
+        "E",
+        "F",
+        "G",
+        "H",
+        "I",
+        "J",
+        "K",
+        "L",
+        "M",
+        "N",
+        "O",
+        "P",
+        "Q",
+        "R",
+        "S",
+        "T",
+        "U",
+        "V",
+        "W",
+        "X",
+        "Y",
+        "Z",
+        "0",
+        "1",
+        "2",
+        "3",
+        "4",
+        "5",
+        "6",
+        "7",
+        "8",
+        "9",
+        "F1",
+        "F2",
+        "F3",
+        "F4",
+        "F5",
+        "F6",
+        "F7",
+        "F8",
+        "F9",
+        "F10",
+        "F11",
+        "F12"
+    ];
+
+    private static readonly HotKeyGesture DefaultLauncherHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "Space");
+    private static readonly HotKeyGesture DefaultClipboardHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "V");
+    private static readonly HotKeyGesture DefaultNotesHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "N");
+    private static readonly HotKeyGesture DefaultSettingsHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "S");
 
     private readonly StateStore _stateStore = new();
     private readonly LocalFileSearchService _fileSearch;
     private readonly ClipboardMonitor _clipboardMonitor = new();
     private readonly DispatcherTimer _ratesRefreshTimer = new();
     private readonly DispatcherTimer _indexProgressTimer = new();
+    private readonly DispatcherTimer _launcherSearchDebounceTimer = new();
     private readonly CancellationTokenSource _fileInitializationCancellation = new();
     private readonly AppState _state;
     private AppSection _selectedSection = AppSection.Settings;
@@ -34,7 +101,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private LauncherSearchResult? _selectedApp;
     private ClipboardEntry? _selectedClipboardEntry;
     private NoteItem? _selectedNote;
+    private NoteImageItem? _selectedNoteImage;
     private bool _isPopupOpen = true;
+    private bool _isClearingCacheData;
     private bool _isSearchingLauncher;
     private bool _isIndexingFiles;
     private double _indexProgressValue;
@@ -43,6 +112,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private CurrencyResult? _currencyResult;
     private bool _isRefreshingRates;
     private bool _startWithWindows;
+    private GlobalHotKeyService? _registeredHotKeys;
+    private Action<AppSection>? _onRegisteredHotKeyOpened;
     private int _launcherSearchVersion;
     private CancellationTokenSource? _launcherSearchCancellation;
     private bool _disposed;
@@ -50,6 +121,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public MainViewModel()
     {
         _state = _stateStore.Load();
+        AppDiagnostics.Configure(Settings.LoggingEnabled, Settings.LogDirectory);
         _fileSearch = new LocalFileSearchService(_stateStore.FolderPath);
         SyncStartWithWindowsSetting();
         _noteFontSizeText = Settings.NoteFontSize.ToString("0", CultureInfo.InvariantCulture);
@@ -59,6 +131,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         UsageItems = new ObservableCollection<LauncherSearchResult>();
         FilteredClipboardItems = new ObservableCollection<ClipboardEntry>(ClipboardItems);
         FilteredNotes = new ObservableCollection<NoteItem>(Notes);
+        HotKeyEditors = new ObservableCollection<HotKeyEditorItem>();
 
         ShowLauncherCommand = new RelayCommand(() => ShowSection(AppSection.Launcher));
         ShowClipboardCommand = new RelayCommand(() => ShowSection(AppSection.Clipboard));
@@ -68,14 +141,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ShowUsageStatsCommand = new RelayCommand(() => SelectedSettingsPage = SettingsPage.Usage);
         ClearUsageStatsCommand = new RelayCommand(ClearUsageStats);
         RebuildFileIndexCommand = new RelayCommand(RebuildFileIndex);
+        ClearCacheDataCommand = new RelayCommand(() => Observe(ClearCacheDataAsync(), "clear cache data command"), () => !_isClearingCacheData);
         OpenSelectedAppCommand = new RelayCommand(OpenSelectedApp, () => SelectedApp is not null);
         CopySelectedClipboardCommand = new RelayCommand(CopySelectedClipboard, () => SelectedClipboardEntry is not null);
         DeleteSelectedClipboardCommand = new RelayCommand(DeleteSelectedClipboard, () => SelectedClipboardEntry is not null);
         AddNoteCommand = new RelayCommand(AddNote);
         DeleteSelectedNoteCommand = new RelayCommand(DeleteSelectedNote, () => SelectedNote is not null);
+        AddNoteImageFromClipboardCommand = new RelayCommand(AddNoteImageFromClipboard, () => SelectedNote is not null);
+        AddNoteImageFromFileCommand = new RelayCommand(AddNoteImageFromFile, () => SelectedNote is not null);
+        DeleteSelectedNoteImageCommand = new RelayCommand(DeleteSelectedNoteImage, () => SelectedNoteImage is not null);
         RefreshRatesCommand = new RelayCommand(() => Observe(RefreshRatesAsync(), "refresh rates command"));
         CopyCalculatorResultCommand = new RelayCommand(CopyCalculatorResult, () => CalculatorResult is not null || CurrencyResult is not null);
         SaveCommand = new RelayCommand(Save);
+        BrowseLogDirectoryCommand = new RelayCommand(BrowseLogDirectory);
+        InitializeHotKeyEditors();
 
         ClipboardItems.CollectionChanged += (_, _) => Save();
         Notes.CollectionChanged += (_, _) => Save();
@@ -83,6 +162,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _clipboardMonitor.Start();
         _indexProgressTimer.Interval = TimeSpan.FromMilliseconds(400);
         _indexProgressTimer.Tick += OnIndexProgressTimerTick;
+        _launcherSearchDebounceTimer.Interval = TimeSpan.FromMilliseconds(120);
+        _launcherSearchDebounceTimer.Tick += OnLauncherSearchDebounceTimerTick;
         Observe(InitializeFileIndexAsync(), "initialize file index");
         _ratesRefreshTimer.Interval = ExchangeRateRefreshInterval;
         _ratesRefreshTimer.Tick += OnRatesRefreshTimerTick;
@@ -99,6 +180,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<ClipboardEntry> FilteredClipboardItems { get; }
     public ObservableCollection<NoteItem> Notes { get; }
     public ObservableCollection<NoteItem> FilteredNotes { get; }
+    public ObservableCollection<HotKeyEditorItem> HotKeyEditors { get; }
 
     public RelayCommand ShowLauncherCommand { get; }
     public RelayCommand ShowClipboardCommand { get; }
@@ -108,14 +190,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand ShowUsageStatsCommand { get; }
     public RelayCommand ClearUsageStatsCommand { get; }
     public RelayCommand RebuildFileIndexCommand { get; }
+    public RelayCommand ClearCacheDataCommand { get; }
     public RelayCommand OpenSelectedAppCommand { get; }
     public RelayCommand CopySelectedClipboardCommand { get; }
     public RelayCommand DeleteSelectedClipboardCommand { get; }
     public RelayCommand AddNoteCommand { get; }
     public RelayCommand DeleteSelectedNoteCommand { get; }
+    public RelayCommand AddNoteImageFromClipboardCommand { get; }
+    public RelayCommand AddNoteImageFromFileCommand { get; }
+    public RelayCommand DeleteSelectedNoteImageCommand { get; }
     public RelayCommand RefreshRatesCommand { get; }
     public RelayCommand CopyCalculatorResultCommand { get; }
     public RelayCommand SaveCommand { get; }
+    public RelayCommand BrowseLogDirectoryCommand { get; }
 
     public AppSection SelectedSection
     {
@@ -305,11 +392,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             if (SetProperty(ref _selectedNote, value))
             {
                 DeleteSelectedNoteCommand.RaiseCanExecuteChanged();
+                AddNoteImageFromClipboardCommand.RaiseCanExecuteChanged();
+                AddNoteImageFromFileCommand.RaiseCanExecuteChanged();
+                SelectedNoteImage = _selectedNote?.Images.FirstOrDefault();
             }
 
             if (_selectedNote is not null)
             {
                 _selectedNote.PropertyChanged += OnSelectedNoteChanged;
+            }
+        }
+    }
+
+    public NoteImageItem? SelectedNoteImage
+    {
+        get => _selectedNoteImage;
+        set
+        {
+            if (SetProperty(ref _selectedNoteImage, value))
+            {
+                DeleteSelectedNoteImageCommand.RaiseCanExecuteChanged();
             }
         }
     }
@@ -393,6 +495,114 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public bool LoggingEnabled
+    {
+        get => Settings.LoggingEnabled;
+        set
+        {
+            if (Settings.LoggingEnabled == value)
+            {
+                return;
+            }
+
+            Settings.LoggingEnabled = value;
+            AppDiagnostics.Configure(Settings.LoggingEnabled, Settings.LogDirectory);
+            OnPropertyChanged();
+            Save();
+        }
+    }
+
+    public string LogDirectory
+    {
+        get => AppDiagnostics.ResolveLogDirectory(Settings.LogDirectory);
+        set
+        {
+            var normalized = AppDiagnostics.ResolveLogDirectory(value);
+            if (Settings.LogDirectory.Equals(normalized, StringComparison.OrdinalIgnoreCase))
+            {
+                return;
+            }
+
+            Settings.LogDirectory = normalized;
+            AppDiagnostics.Configure(Settings.LoggingEnabled, Settings.LogDirectory);
+            OnPropertyChanged();
+            Save();
+        }
+    }
+
+    private void BrowseLogDirectory()
+    {
+        using var dialog = new WinFormsFolderBrowserDialog
+        {
+            Description = "选择日志输出文件夹",
+            SelectedPath = Directory.Exists(LogDirectory) ? LogDirectory : _stateStore.FolderPath,
+            UseDescriptionForTitle = true
+        };
+
+        if (dialog.ShowDialog() == WinFormsDialogResult.OK)
+        {
+            LogDirectory = dialog.SelectedPath;
+        }
+    }
+
+    private void InitializeHotKeyEditors()
+    {
+        HotKeyEditors.Add(new HotKeyEditorItem(
+            "导航",
+            AppSection.Launcher,
+            Settings.LauncherHotKey,
+            DefaultLauncherHotKey,
+            HotKeyOptions,
+            ShowLauncherCommand,
+            ApplyHotKeyEditorChange));
+        HotKeyEditors.Add(new HotKeyEditorItem(
+            "剪贴板",
+            AppSection.Clipboard,
+            Settings.ClipboardHotKey,
+            DefaultClipboardHotKey,
+            HotKeyOptions,
+            ShowClipboardCommand,
+            ApplyHotKeyEditorChange));
+        HotKeyEditors.Add(new HotKeyEditorItem(
+            "记事本",
+            AppSection.Notes,
+            Settings.NotesHotKey,
+            DefaultNotesHotKey,
+            HotKeyOptions,
+            ShowNotesCommand,
+            ApplyHotKeyEditorChange));
+        HotKeyEditors.Add(new HotKeyEditorItem(
+            "设置",
+            AppSection.Settings,
+            Settings.SettingsHotKey,
+            DefaultSettingsHotKey,
+            HotKeyOptions,
+            ShowSettingsCommand,
+            ApplyHotKeyEditorChange));
+    }
+
+    private void ApplyHotKeyEditorChange(HotKeyEditorItem editor)
+    {
+        switch (editor.Section)
+        {
+            case AppSection.Launcher:
+                Settings.LauncherHotKey = editor.Gesture;
+                break;
+            case AppSection.Clipboard:
+                Settings.ClipboardHotKey = editor.Gesture;
+                break;
+            case AppSection.Notes:
+                Settings.NotesHotKey = editor.Gesture;
+                break;
+            case AppSection.Settings:
+                Settings.SettingsHotKey = editor.Gesture;
+                break;
+        }
+
+        Save();
+        ApplyRegisteredHotKeys();
+    }
+
     public void ShowSection(AppSection section)
     {
         SelectedSection = section;
@@ -401,16 +611,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public void RegisterHotKeys(GlobalHotKeyService hotKeys, Action<AppSection>? onSectionOpened = null)
     {
+        _registeredHotKeys = hotKeys;
+        _onRegisteredHotKeyOpened = onSectionOpened;
+        ApplyRegisteredHotKeys();
+    }
+
+    private void ApplyRegisteredHotKeys()
+    {
+        if (_registeredHotKeys is null)
+        {
+            return;
+        }
+
         void Register(HotKeyGesture gesture, AppSection section)
         {
-            hotKeys.Register(gesture, () =>
+            _registeredHotKeys.Register(gesture, () =>
             {
                 ShowSection(section);
-                onSectionOpened?.Invoke(section);
+                _onRegisteredHotKeyOpened?.Invoke(section);
             });
         }
 
-        hotKeys.Clear();
+        _registeredHotKeys.Clear();
         Register(Settings.LauncherHotKey, AppSection.Launcher);
         Register(Settings.ClipboardHotKey, AppSection.Clipboard);
         Register(Settings.NotesHotKey, AppSection.Notes);
@@ -441,13 +663,16 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _disposed = true;
         _indexProgressTimer.Stop();
         _indexProgressTimer.Tick -= OnIndexProgressTimerTick;
+        _launcherSearchDebounceTimer.Stop();
+        _launcherSearchDebounceTimer.Tick -= OnLauncherSearchDebounceTimerTick;
         _ratesRefreshTimer.Stop();
         _ratesRefreshTimer.Tick -= OnRatesRefreshTimerTick;
         _clipboardMonitor.Stop();
         _fileInitializationCancellation.Cancel();
-        _fileInitializationCancellation.Dispose();
-        _launcherSearchCancellation?.Cancel();
+        CancelSearch(_launcherSearchCancellation);
         _launcherSearchCancellation?.Dispose();
+        _fileSearch.Dispose();
+        _fileInitializationCancellation.Dispose();
     }
 
     private void SyncStartWithWindowsSetting()
@@ -477,7 +702,37 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void QueueLauncherSearch()
     {
+        if (_disposed)
+        {
+            return;
+        }
+
+        Interlocked.Increment(ref _launcherSearchVersion);
+        CancelSearch(_launcherSearchCancellation);
+        _launcherSearchDebounceTimer.Stop();
+        _launcherSearchDebounceTimer.Start();
+    }
+
+    private void OnLauncherSearchDebounceTimerTick(object? sender, EventArgs e)
+    {
+        _launcherSearchDebounceTimer.Stop();
+        if (_disposed)
+        {
+            return;
+        }
+
         Observe(RefreshLauncherResultsAsync(), "launcher search");
+    }
+
+    private static void CancelSearch(CancellationTokenSource? cancellation)
+    {
+        try
+        {
+            cancellation?.Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+        }
     }
 
     private async Task InitializeFileIndexAsync()
@@ -490,37 +745,54 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             LauncherStatusText = IndexProgressText;
             IsIndexingFiles = true;
             _indexProgressTimer.Start();
+            AppDiagnostics.LogInfo("init: load local index cache first", "index startup");
 
             var loadedCache = await _fileSearch.LoadCacheAsync(cancellationToken);
             cancellationToken.ThrowIfCancellationRequested();
 
-            var today = DateOnly.FromDateTime(DateTime.Now);
-            if (!Settings.AutoScanOnDailyFirstLaunch)
+            if (loadedCache)
             {
-                IndexProgressValue = loadedCache ? 100 : 0;
-                IndexProgressText = loadedCache
-                    ? $"已加载本地索引缓存，收录 {_fileSearch.IndexedCount:N0} 项"
-                    : "已关闭自动扫描，可手动重新扫描硬盘数据";
-                IsIndexingFiles = false;
-                LauncherStatusText = loadedCache ? "输入关键词搜索本机文件" : IndexProgressText;
-                _indexProgressTimer.Stop();
-                QueueLauncherSearch();
-                return;
-            }
-
-            if (Settings.LastFileIndexScanDate == today && loadedCache)
-            {
+                var completingCacheLoad = _fileSearch.IsCompletingCacheLoad;
+                AppDiagnostics.LogInfo(
+                    completingCacheLoad
+                        ? "app cache loaded; full file cache continues in background"
+                        : Settings.AutoScanOnDailyFirstLaunch
+                            ? "cache loaded; enable NTFS USN delta + FileSystemWatcher"
+                            : "cache loaded; startup auto update is disabled",
+                    "index startup");
                 IndexProgressValue = 100;
-                IndexProgressText = $"已加载本地索引缓存，收录 {_fileSearch.IndexedCount:N0} 项";
+                IndexProgressText = completingCacheLoad
+                    ? $"已加载应用缓存，收录 {_fileSearch.IndexedCount:N0} 项"
+                    : Settings.AutoScanOnDailyFirstLaunch
+                    ? $"已加载本地索引缓存，收录 {_fileSearch.IndexedCount:N0} 项，已启用增量更新"
+                    : $"已加载本地索引缓存，收录 {_fileSearch.IndexedCount:N0} 项";
                 IsIndexingFiles = false;
+                if (Settings.AutoScanOnDailyFirstLaunch)
+                {
+                    _fileSearch.StartIncrementalIndexing();
+                }
+
                 LauncherStatusText = "输入关键词搜索本机文件";
                 _indexProgressTimer.Stop();
                 QueueLauncherSearch();
                 return;
             }
 
-            _fileSearch.StartIndexing();
-            Settings.LastFileIndexScanDate = today;
+            if (!Settings.AutoScanOnDailyFirstLaunch)
+            {
+                AppDiagnostics.LogInfo("no cache; startup auto update is disabled", "index startup");
+                IndexProgressValue = 0;
+                IndexProgressText = "没有本地索引缓存，可手动重新扫描硬盘数据";
+                IsIndexingFiles = false;
+                LauncherStatusText = IndexProgressText;
+                _indexProgressTimer.Stop();
+                QueueLauncherSearch();
+                return;
+            }
+
+            AppDiagnostics.LogInfo("no cache; rebuild index; NTFS roots try MFT first", "index startup");
+            _fileSearch.RebuildIndex();
+            Settings.LastFileIndexScanDate = DateOnly.FromDateTime(DateTime.Now);
             Save();
             _indexProgressTimer.Start();
             RefreshIndexProgress();
@@ -603,7 +875,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void RebuildFileIndex()
     {
         _fileInitializationCancellation.Cancel();
-        _launcherSearchCancellation?.Cancel();
+        CancelSearch(_launcherSearchCancellation);
         FilteredApps.Clear();
         SelectedApp = null;
         LauncherStatusText = "正在重新扫描硬盘数据...";
@@ -615,12 +887,76 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         QueueLauncherSearch();
     }
 
+    private async Task ClearCacheDataAsync()
+    {
+        var firstConfirm = WpfMessageBox.Show(
+            "确定要清除所有导航缓存数据吗？清除后需要重新扫描硬盘数据才能恢复完整文件/文件夹搜索。",
+            "清除缓存数据",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (firstConfirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        var secondConfirm = WpfMessageBox.Show(
+            "请再次确认：这会删除本地索引缓存和 NTFS 增量缓存，当前导航索引也会被清空。",
+            "再次确认清除",
+            MessageBoxButton.YesNo,
+            MessageBoxImage.Warning,
+            MessageBoxResult.No);
+        if (secondConfirm != MessageBoxResult.Yes)
+        {
+            return;
+        }
+
+        try
+        {
+            _isClearingCacheData = true;
+            ClearCacheDataCommand.RaiseCanExecuteChanged();
+            _fileInitializationCancellation.Cancel();
+            var deleted = await _fileSearch.ClearCacheDataAsync();
+            Interlocked.Increment(ref _launcherSearchVersion);
+            CancelSearch(_launcherSearchCancellation);
+            _launcherSearchCancellation = null;
+            _indexProgressTimer.Stop();
+            FilteredApps.Clear();
+            SelectedApp = null;
+            IsIndexingFiles = false;
+            IndexProgressValue = 0;
+            IndexProgressText = $"已清除导航缓存数据，删除 {deleted:N0} 个缓存文件，可手动重新扫描硬盘数据";
+            LauncherStatusText = IndexProgressText;
+            Settings.LastFileIndexScanDate = null;
+            Save();
+            WpfMessageBox.Show(
+                $"已清除导航缓存数据，删除 {deleted:N0} 个缓存文件。",
+                "清除完成",
+                MessageBoxButton.OK,
+                MessageBoxImage.Information);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "clear cache data");
+            WpfMessageBox.Show(
+                "清除缓存数据失败，详情已写入日志。",
+                "清除失败",
+                MessageBoxButton.OK,
+                MessageBoxImage.Error);
+        }
+        finally
+        {
+            _isClearingCacheData = false;
+            ClearCacheDataCommand.RaiseCanExecuteChanged();
+        }
+    }
+
     private async Task RefreshLauncherResultsAsync()
     {
         var query = LauncherQuery.Trim();
         var version = Interlocked.Increment(ref _launcherSearchVersion);
         var oldCancellation = _launcherSearchCancellation;
-        oldCancellation?.Cancel();
+        CancelSearch(oldCancellation);
 
         if (string.IsNullOrWhiteSpace(query))
         {
@@ -886,6 +1222,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             "Text" => items.Where(item => item.Kind == ClipboardItemKind.Text),
             "Image" => items.Where(item => item.Kind == ClipboardItemKind.Image),
+            "File" => items.Where(item => item.Kind == ClipboardItemKind.File),
+            "Link" => items.Where(item => item.Kind == ClipboardItemKind.Link),
+            "Color" => items.Where(item => item.Kind == ClipboardItemKind.Color),
             _ => items
         };
 
@@ -911,21 +1250,27 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _clipboardMonitor.IgnoreNextChange = true;
         try
         {
-            if (SelectedClipboardEntry.Kind == ClipboardItemKind.Text)
+            switch (SelectedClipboardEntry.Kind)
             {
-                WpfClipboard.SetText(SelectedClipboardEntry.Content);
-                _clipboardMonitor.RememberText(SelectedClipboardEntry.Content);
-            }
-            else if (SelectedClipboardEntry.ImageBytes is not null)
-            {
-                using var stream = new MemoryStream(SelectedClipboardEntry.ImageBytes);
-                var image = System.Windows.Media.Imaging.BitmapFrame.Create(
-                    stream,
-                    System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
-                    System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
-                image.Freeze();
-                WpfClipboard.SetImage(image);
-                _clipboardMonitor.RememberImage(image);
+                case ClipboardItemKind.Image when SelectedClipboardEntry.ImageBytes is not null:
+                {
+                    using var stream = new MemoryStream(SelectedClipboardEntry.ImageBytes);
+                    var image = System.Windows.Media.Imaging.BitmapFrame.Create(
+                        stream,
+                        System.Windows.Media.Imaging.BitmapCreateOptions.PreservePixelFormat,
+                        System.Windows.Media.Imaging.BitmapCacheOption.OnLoad);
+                    var normalizedImage = ClipboardImageNormalizer.RestoreOpaqueAlphaIfFullyTransparent(image);
+                    WpfClipboard.SetImage(normalizedImage);
+                    _clipboardMonitor.RememberImage(normalizedImage);
+                    break;
+                }
+                case ClipboardItemKind.File:
+                    CopyFileClipboardEntry(SelectedClipboardEntry);
+                    break;
+                default:
+                    WpfClipboard.SetText(SelectedClipboardEntry.Content);
+                    _clipboardMonitor.RememberText(SelectedClipboardEntry.Content);
+                    break;
             }
         }
         catch (Exception ex)
@@ -936,6 +1281,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         IsPopupOpen = false;
+    }
+
+    private void CopyFileClipboardEntry(ClipboardEntry entry)
+    {
+        var paths = ClipboardClassifier.ExtractExistingFilePaths(entry.Content);
+        if (paths.Count == 0)
+        {
+            WpfClipboard.SetText(entry.Content);
+            _clipboardMonitor.RememberText(entry.Content);
+            return;
+        }
+
+        var fileDropList = new StringCollection();
+        foreach (var path in paths)
+        {
+            fileDropList.Add(path);
+        }
+
+        WpfClipboard.SetFileDropList(fileDropList);
+        _clipboardMonitor.RememberText(ClipboardClassifier.NormalizeFileContent(paths));
     }
 
     private void DeleteSelectedClipboard()
@@ -990,6 +1355,153 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Notes.Remove(SelectedNote);
         RefreshNoteResults();
         Save();
+    }
+
+    private void AddNoteImageFromClipboard()
+    {
+        if (SelectedNote is null)
+        {
+            return;
+        }
+
+        try
+        {
+            BitmapSource? image = null;
+            if (WpfClipboard.ContainsImage())
+            {
+                image = WpfClipboard.GetImage();
+            }
+            else if (WpfClipboard.ContainsFileDropList())
+            {
+                foreach (var file in WpfClipboard.GetFileDropList().Cast<string>())
+                {
+                    if (TryLoadNoteImage(file) is not { } fileImage)
+                    {
+                        continue;
+                    }
+
+                    AddNoteImage(fileImage);
+                }
+
+                return;
+            }
+
+            if (image is null)
+            {
+                return;
+            }
+
+            AddNoteImage(image);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "add note image from clipboard");
+        }
+    }
+
+    private void AddNoteImageFromFile()
+    {
+        if (SelectedNote is null)
+        {
+            return;
+        }
+
+        var dialog = new WpfOpenFileDialog
+        {
+            Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp|所有文件|*.*",
+            Multiselect = true
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        foreach (var file in dialog.FileNames)
+        {
+            if (TryLoadNoteImage(file) is { } image)
+            {
+                AddNoteImage(image);
+            }
+        }
+    }
+
+    private void AddNoteImage(BitmapSource image)
+    {
+        if (SelectedNote is null)
+        {
+            return;
+        }
+
+        var normalized = ClipboardImageNormalizer.RestoreOpaqueAlphaIfFullyTransparent(image);
+        var item = new NoteImageItem
+        {
+            ImageBytes = EncodeNoteImage(normalized)
+        };
+
+        SelectedNote.Images.Add(item);
+        SelectedNoteImage = item;
+        TouchSelectedNote();
+    }
+
+    private void DeleteSelectedNoteImage()
+    {
+        if (SelectedNote is null || SelectedNoteImage is null)
+        {
+            return;
+        }
+
+        var index = SelectedNote.Images.IndexOf(SelectedNoteImage);
+        SelectedNote.Images.Remove(SelectedNoteImage);
+        SelectedNoteImage = SelectedNote.Images.Count == 0
+            ? null
+            : SelectedNote.Images[Math.Clamp(index, 0, SelectedNote.Images.Count - 1)];
+        TouchSelectedNote();
+    }
+
+    private void TouchSelectedNote()
+    {
+        if (SelectedNote is null)
+        {
+            return;
+        }
+
+        SelectedNote.UpdatedAt = DateTimeOffset.Now;
+        RefreshNoteResults();
+        Save();
+    }
+
+    private static BitmapSource? TryLoadNoteImage(string path)
+    {
+        try
+        {
+            if (!File.Exists(path))
+            {
+                return null;
+            }
+
+            using var stream = new FileStream(path, FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+            var image = BitmapFrame.Create(
+                stream,
+                BitmapCreateOptions.PreservePixelFormat,
+                BitmapCacheOption.OnLoad);
+            image.Freeze();
+            return image;
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, $"load note image {path}");
+            return null;
+        }
+    }
+
+    private static byte[] EncodeNoteImage(BitmapSource image)
+    {
+        var encoder = new PngBitmapEncoder();
+        encoder.Frames.Add(BitmapFrame.Create(image));
+        using var stream = new MemoryStream();
+        encoder.Save(stream);
+        return stream.ToArray();
     }
 
     private async Task RefreshRatesAsync()

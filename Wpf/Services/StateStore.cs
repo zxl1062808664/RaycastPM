@@ -77,6 +77,7 @@ public sealed class StateStore
         state ??= new AppState();
         state.Settings ??= new AppSettings();
         state.Settings.CustomAppDirectories ??= [];
+        state.Settings.LogDirectory = AppDiagnostics.ResolveLogDirectory(state.Settings.LogDirectory);
         state.Settings.ExchangeRatesToCny = NormalizeRates(state.Settings.ExchangeRatesToCny);
         if (!double.IsFinite(state.Settings.NoteFontSize) || state.Settings.NoteFontSize <= 0)
         {
@@ -90,12 +91,43 @@ public sealed class StateStore
                 StringComparer.OrdinalIgnoreCase);
         state.ClipboardItems = state.ClipboardItems?
             .Where(item => item is not null)
+            .Select(NormalizeClipboardEntry)
             .Take(120)
             .ToList() ?? [];
         state.Notes = state.Notes?
             .Where(item => item is not null)
+            .Select(NormalizeNote)
             .ToList() ?? [];
         return state;
+    }
+
+    private static NoteItem NormalizeNote(NoteItem note)
+    {
+        note.Images ??= [];
+        for (var index = note.Images.Count - 1; index >= 0; index--)
+        {
+            if (note.Images[index].ImageBytes.Length == 0)
+            {
+                note.Images.RemoveAt(index);
+            }
+        }
+
+        return note;
+    }
+
+    private static ClipboardEntry NormalizeClipboardEntry(ClipboardEntry item)
+    {
+        if (item.Kind == ClipboardItemKind.Text && !string.IsNullOrWhiteSpace(item.Content))
+        {
+            item.Kind = ClipboardClassifier.ClassifyText(item.Content);
+        }
+
+        if (item.Kind != ClipboardItemKind.Image)
+        {
+            item.ImageBytes = null;
+        }
+
+        return item;
     }
 
     private static Dictionary<string, double> NormalizeRates(Dictionary<string, double>? rates)
