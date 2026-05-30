@@ -110,6 +110,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _isSearchingLauncher;
     private bool _isIndexingFiles;
     private bool _isRefreshingSystemMonitor;
+    private bool _isMainWindowVisible = true;
+    private bool _isSystemMonitorPanelVisible;
     private double _indexProgressValue;
     private string _indexProgressText = "正在扫描磁盘...";
     private string _systemMonitorNetworkText = "↓ 0 B/s  ↑ 0 B/s";
@@ -176,7 +178,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _systemMonitorTimer.Tick += OnSystemMonitorTimerTick;
         if (Settings.SystemMonitorEnabled)
         {
-            StartSystemMonitor();
+            ApplySystemMonitorTimerPolicy();
         }
 
         Observe(InitializeFileIndexAsync(), "initialize file index");
@@ -564,7 +566,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Settings.SystemMonitorEnabled = value;
             if (value)
             {
-                StartSystemMonitor();
+                ApplySystemMonitorTimerPolicy(refreshImmediately: true);
             }
             else
             {
@@ -609,15 +611,10 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
-    private void StartSystemMonitor()
-    {
-        Observe(RefreshSystemMonitorAsync(), "refresh system monitor");
-        _systemMonitorTimer.Start();
-    }
-
     private void StopSystemMonitor()
     {
         _systemMonitorTimer.Stop();
+        _systemMonitor.ResetSamplingBaseline();
         SystemMonitorNetworkText = "↓ 0 B/s  ↑ 0 B/s";
         SystemMonitorCpuText = "CPU 0%";
         SystemMonitorGpuText = "GPU --";
@@ -626,12 +623,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnSystemMonitorTimerTick(object? sender, EventArgs e)
     {
-        Observe(RefreshSystemMonitorAsync(), "refresh system monitor");
+        if (ShouldRunSystemMonitor)
+        {
+            Observe(RefreshSystemMonitorAsync(), "refresh system monitor");
+        }
     }
 
     private async Task RefreshSystemMonitorAsync()
     {
-        if (_disposed || !Settings.SystemMonitorEnabled || _isRefreshingSystemMonitor)
+        if (_disposed || !ShouldRunSystemMonitor || _isRefreshingSystemMonitor)
         {
             return;
         }
@@ -650,6 +650,79 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         finally
         {
             _isRefreshingSystemMonitor = false;
+        }
+    }
+
+    public void SetUiActivityState(bool isMainWindowVisible, bool isSystemMonitorPanelVisible)
+    {
+        if (_disposed
+            || (_isMainWindowVisible == isMainWindowVisible
+                && _isSystemMonitorPanelVisible == isSystemMonitorPanelVisible))
+        {
+            return;
+        }
+
+        _isMainWindowVisible = isMainWindowVisible;
+        _isSystemMonitorPanelVisible = isSystemMonitorPanelVisible;
+        AppDiagnostics.LogInfo(
+            $"ui activity state changed; mainVisible={_isMainWindowVisible}; monitorVisible={_isSystemMonitorPanelVisible}",
+            "idle");
+        ApplyIdleTimerPolicy();
+    }
+
+    private bool ShouldRunSystemMonitor => Settings.SystemMonitorEnabled && _isSystemMonitorPanelVisible;
+
+    private void ApplyIdleTimerPolicy()
+    {
+        if (_disposed)
+        {
+            return;
+        }
+
+        ApplySystemMonitorTimerPolicy(refreshImmediately: _isSystemMonitorPanelVisible);
+        if (_isMainWindowVisible)
+        {
+            if (!_ratesRefreshTimer.IsEnabled)
+            {
+                _ratesRefreshTimer.Start();
+                Observe(RefreshRatesIfStaleAsync(), "refresh rates foreground");
+            }
+
+            if (IsIndexingFiles && !_indexProgressTimer.IsEnabled)
+            {
+                _indexProgressTimer.Start();
+                RefreshIndexProgress();
+            }
+
+            return;
+        }
+
+        _ratesRefreshTimer.Stop();
+        _indexProgressTimer.Stop();
+        _launcherSearchDebounceTimer.Stop();
+        CancelSearch(_launcherSearchCancellation);
+        IsSearchingLauncher = false;
+    }
+
+    private void ApplySystemMonitorTimerPolicy(bool refreshImmediately = false)
+    {
+        if (!ShouldRunSystemMonitor)
+        {
+            _systemMonitorTimer.Stop();
+            _systemMonitor.ResetSamplingBaseline();
+            return;
+        }
+
+        _systemMonitorTimer.Interval = SystemMonitorRefreshInterval;
+        if (!_systemMonitorTimer.IsEnabled)
+        {
+            _systemMonitor.ResetSamplingBaseline();
+            _systemMonitorTimer.Start();
+        }
+
+        if (refreshImmediately)
+        {
+            Observe(RefreshSystemMonitorAsync(), "refresh system monitor");
         }
     }
 
@@ -1659,6 +1732,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private void OnRatesRefreshTimerTick(object? sender, EventArgs e)
     {
+        if (!_isMainWindowVisible)
+        {
+            return;
+        }
+
         Observe(RefreshRatesAsync(), "refresh rates timer");
     }
 

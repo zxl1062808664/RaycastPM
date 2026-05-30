@@ -29,6 +29,7 @@ public partial class MainWindow : Window
         _trayIcon = CreateTrayIcon();
         _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         Loaded += OnLoaded;
+        IsVisibleChanged += OnIsVisibleChanged;
         StateChanged += OnStateChanged;
         Deactivated += OnDeactivated;
         PreviewKeyDown += OnPreviewKeyDown;
@@ -49,6 +50,7 @@ public partial class MainWindow : Window
             RestoreWindow();
         });
         UpdateSystemMonitorWindow();
+        UpdateUiActivityState();
     }
 
     private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
@@ -56,6 +58,7 @@ public partial class MainWindow : Window
         if (e.PropertyName == nameof(MainViewModel.SystemMonitorEnabled))
         {
             UpdateSystemMonitorWindow();
+            UpdateUiActivityState();
         }
     }
 
@@ -69,7 +72,13 @@ public partial class MainWindow : Window
                 {
                     DataContext = _viewModel
                 };
-                _systemMonitorWindow.Closed += (_, _) => _systemMonitorWindow = null;
+                _systemMonitorWindow.IsVisibleChanged += OnSystemMonitorWindowIsVisibleChanged;
+                _systemMonitorWindow.Closed += (_, _) =>
+                {
+                    _systemMonitorWindow.IsVisibleChanged -= OnSystemMonitorWindowIsVisibleChanged;
+                    _systemMonitorWindow = null;
+                    UpdateUiActivityState();
+                };
             }
 
             _systemMonitorWindow.Topmost = true;
@@ -78,10 +87,27 @@ public partial class MainWindow : Window
                 _systemMonitorWindow.Show();
             }
 
+            UpdateUiActivityState();
             return;
         }
 
         _systemMonitorWindow?.Hide();
+        UpdateUiActivityState();
+    }
+
+    private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        UpdateUiActivityState();
+    }
+
+    private void OnSystemMonitorWindowIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        UpdateUiActivityState();
+    }
+
+    private void UpdateUiActivityState()
+    {
+        _viewModel.SetUiActivityState(IsVisible, _systemMonitorWindow?.IsVisible == true);
     }
 
     private Forms.NotifyIcon CreateTrayIcon()
@@ -147,6 +173,7 @@ public partial class MainWindow : Window
         }
 
         Activate();
+        UpdateUiActivityState();
     }
 
     private bool ShouldAutoHide()

@@ -16,6 +16,16 @@ public sealed class SystemMonitorService : IDisposable
     private long _previousBytesReceived;
     private long _previousBytesSent;
 
+    public void ResetSamplingBaseline()
+    {
+        _previousIdleTime = 0;
+        _previousKernelTime = 0;
+        _previousUserTime = 0;
+        _previousNetworkTicks = 0;
+        _previousBytesReceived = 0;
+        _previousBytesSent = 0;
+    }
+
     public SystemMonitorSnapshot GetSnapshot()
     {
         var (bytesReceived, bytesSent) = ReadNetworkBytes();
