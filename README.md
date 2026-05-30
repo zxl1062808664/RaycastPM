@@ -37,12 +37,12 @@ RaycastPM 是一个 Windows 桌面效率工具，当前主版本基于 .NET 10 +
 - 使用次数越多，排序越靠前
 - 支持类似 Everything 的组合搜索规则
 - 启动时优先加载轻量应用缓存，应用可用后立即进入可搜索状态
-- 完整文件/文件夹缓存会在后台异步加载，不阻塞主线程，也不额外显示加载提示
-- NTFS 磁盘优先通过 MFT 枚举建立索引，并用 USN Journal 补齐关闭期间的文件变化
-- 非 NTFS、网络盘或权限不足时自动回退到普通目录扫描和文件系统监听
+- 完整文件/文件夹缓存使用低内存 packed 二进制格式，并在后台异步加载，不阻塞主线程，也不额外显示加载提示
+- 首次缺少完整 packed 缓存时会在后台静默重建；手动重建时显示索引进度
+- 增量变化通过 `FileSystemWatcher` 监听，旧 NTFS FRN/MFT 缓存会被清理，不再加载到内存
 - 设置页提供手动重新扫描硬盘数据按钮
 - 设置页提供清除导航缓存数据按钮，删除前需要二次确认
-- 首次无缓存或手动重建时显示索引进度
+- 首次连应用缓存也不存在或手动重建时显示索引进度
 
 用户搜索规则说明见：[`docs/navigation-search-rules.md`](docs/navigation-search-rules.md)。
 
@@ -50,11 +50,10 @@ RaycastPM 是一个 Windows 桌面效率工具，当前主版本基于 .NET 10 +
 
 ```text
 %AppData%\RaycastPM\file-index-app-cache-v1.mpack
-%AppData%\RaycastPM\file-index-cache-v3.mpack
-%AppData%\RaycastPM\file-index-ntfs-journal.mpack
+%AppData%\RaycastPM\file-index-cache-v6.bin
 ```
 
-其中 `file-index-app-cache-v1.mpack` 是启动快路径使用的应用缓存，`file-index-cache-v3.mpack` 是完整文件/文件夹索引缓存。旧版本的 `file-index-cache-v4.mpack` / `file-index-cache.json` / `file-index-cache.bin` / `file-index-cache*.mpack` 会在启动时兼容读取，读取成功后会自动迁移为当前 MemoryPack 缓存。
+其中 `file-index-app-cache-v1.mpack` 是启动快路径使用的应用缓存，`file-index-cache-v6.bin` 是完整文件/文件夹 packed 索引缓存。旧版本的 `file-index-cache-v*.mpack` / `file-index-cache.json` / `file-index-cache.bin` / `file-index-ntfs-journal.mpack` 不再读取，启动或保存缓存时会自动清理。
 
 ### 3. 剪贴板
 
@@ -160,8 +159,7 @@ RaycastPM/
 ```text
 state.json                         应用设置、剪贴板历史、记事内容、使用次数
 file-index-app-cache-v1.mpack      导航启动快路径使用的应用索引缓存
-file-index-cache-v3.mpack          本机文件/文件夹完整索引缓存
-file-index-ntfs-journal.mpack      NTFS MFT/USN 文件号映射缓存
+file-index-cache-v6.bin            本机文件/文件夹 packed 完整索引缓存
 logs\raycastpm-yyyyMMdd.log        可配置开启的运行日志
 ```
 

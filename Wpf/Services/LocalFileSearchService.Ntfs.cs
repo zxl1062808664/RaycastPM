@@ -32,40 +32,13 @@ public sealed partial class LocalFileSearchService
 
     private bool TryIndexNtfsRoot(string root, CancellationToken cancellationToken)
     {
-        if (!IsNtfsRoot(root))
-        {
-            return false;
-        }
-
-        if (!TryReadNtfsSnapshot(root, cancellationToken, out var snapshot))
-        {
-            AppDiagnostics.LogInfo($"root={root}; NTFS MFT enumeration failed", "index startup");
-            return false;
-        }
-
-        AddNtfsSnapshotItems(root, snapshot, removeExistingRoot: false, cancellationToken);
-        AppDiagnostics.LogInfo($"root={root}; NTFS MFT indexed; mftRecords={snapshot.Records.Count:N0}", "index startup");
-        return true;
+        AppDiagnostics.LogInfo($"root={root}; NTFS MFT enumeration disabled for low-memory packed index", "index startup");
+        return false;
     }
 
     private void QueueNtfsJournalUpdate()
     {
-        if (Interlocked.Exchange(ref _ntfsJournalUpdateQueued, 1) == 1)
-        {
-            return;
-        }
-
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                ApplyNtfsJournalUpdates(CancellationToken.None);
-            }
-            finally
-            {
-                Interlocked.Exchange(ref _ntfsJournalUpdateQueued, 0);
-            }
-        });
+        AppDiagnostics.LogInfo("skip NTFS USN delta cache; FileSystemWatcher handles incremental navigation updates", "index startup");
     }
 
     private void ApplyNtfsJournalUpdates(CancellationToken cancellationToken)
@@ -81,8 +54,7 @@ public sealed partial class LocalFileSearchService
 
             if (!_ntfsVolumeIndexes.TryGetValue(root, out var volume))
             {
-                AppDiagnostics.LogInfo($"root={root}; missing NTFS FRN cache; rebuild MFT", "index startup");
-                changed |= TryRebuildNtfsRoot(root, cancellationToken);
+                AppDiagnostics.LogInfo($"root={root}; missing NTFS FRN cache; skip MFT rebuild to keep memory low", "index startup");
                 continue;
             }
 
@@ -96,8 +68,7 @@ public sealed partial class LocalFileSearchService
 
             if (status == NtfsJournalUpdateStatus.Unavailable)
             {
-                AppDiagnostics.LogInfo($"root={root}; USN unavailable or invalid; rebuild MFT", "index startup");
-                changed |= TryRebuildNtfsRoot(root, cancellationToken);
+                AppDiagnostics.LogInfo($"root={root}; USN unavailable or invalid; skip MFT rebuild to keep memory low", "index startup");
             }
         }
 
@@ -478,52 +449,14 @@ public sealed partial class LocalFileSearchService
 
         try
         {
-            using var stream = new FileStream(
-                _ntfsJournalCachePath,
-                FileMode.Open,
-                FileAccess.Read,
-                FileShare.Read,
-                CacheFileBufferSize,
-                FileOptions.SequentialScan);
-            var cache = MemoryPackSerializer
-                .DeserializeAsync<NtfsJournalIndexCache>(stream)
-                .AsTask()
-                .GetAwaiter()
-                .GetResult();
-            if (cache?.Version != NtfsJournalCacheVersion)
-            {
-                AppDiagnostics.LogInfo("NTFS FRN cache version mismatch; rebuild required", "index startup");
-                return;
-            }
-
             _ntfsVolumeIndexes.Clear();
-            foreach (var volume in cache.Volumes)
-            {
-                if (string.IsNullOrWhiteSpace(volume.Root))
-                {
-                    continue;
-                }
-
-                _ntfsVolumeIndexes[NormalizeRootPath(volume.Root)] = new NtfsVolumeIndex(
-                    NormalizeRootPath(volume.Root),
-                    volume.JournalId,
-                    volume.NextUsn,
-                    volume.Records
-                        .Where(record => record.FileReferenceNumber != 0 && !string.IsNullOrWhiteSpace(record.Name))
-                        .ToDictionary(
-                            record => record.FileReferenceNumber,
-                            record => new NtfsRecordEntry(
-                                record.FileReferenceNumber,
-                                record.ParentFileReferenceNumber,
-                                record.Name,
-                                record.FileAttributes)));
-            }
-
-            AppDiagnostics.LogInfo($"loaded NTFS FRN cache; volumes={_ntfsVolumeIndexes.Count:N0}", "index startup");
+            TryDeleteFile(_ntfsJournalCachePath);
+            TryDeleteFile($"{_ntfsJournalCachePath}.tmp");
+            AppDiagnostics.LogInfo("discarded legacy NTFS FRN cache to keep navigation memory low", "index startup");
         }
         catch (Exception ex)
         {
-            AppDiagnostics.LogException(ex, "load NTFS journal cache");
+            AppDiagnostics.LogException(ex, "discard NTFS journal cache");
             _ntfsVolumeIndexes.Clear();
         }
     }

@@ -20,6 +20,7 @@ namespace RaycastPM.ViewModels;
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private static readonly TimeSpan ExchangeRateRefreshInterval = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan SystemMonitorRefreshInterval = TimeSpan.FromSeconds(1);
     private static readonly IReadOnlyList<string> HotKeyOptions =
     [
         "Space",
@@ -83,10 +84,12 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     private readonly StateStore _stateStore = new();
     private readonly LocalFileSearchService _fileSearch;
+    private readonly SystemMonitorService _systemMonitor = new();
     private readonly ClipboardMonitor _clipboardMonitor = new();
     private readonly DispatcherTimer _ratesRefreshTimer = new();
     private readonly DispatcherTimer _indexProgressTimer = new();
     private readonly DispatcherTimer _launcherSearchDebounceTimer = new();
+    private readonly DispatcherTimer _systemMonitorTimer = new();
     private readonly CancellationTokenSource _fileInitializationCancellation = new();
     private readonly AppState _state;
     private AppSection _selectedSection = AppSection.Settings;
@@ -106,8 +109,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _isClearingCacheData;
     private bool _isSearchingLauncher;
     private bool _isIndexingFiles;
+    private bool _isRefreshingSystemMonitor;
     private double _indexProgressValue;
     private string _indexProgressText = "正在扫描磁盘...";
+    private string _systemMonitorNetworkText = "↓ 0 B/s  ↑ 0 B/s";
+    private string _systemMonitorCpuText = "CPU 0%";
+    private string _systemMonitorGpuText = "GPU --";
+    private string _systemMonitorMemoryText = "内存 0%";
     private double? _calculatorResult;
     private CurrencyResult? _currencyResult;
     private bool _isRefreshingRates;
@@ -164,6 +172,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _indexProgressTimer.Tick += OnIndexProgressTimerTick;
         _launcherSearchDebounceTimer.Interval = TimeSpan.FromMilliseconds(120);
         _launcherSearchDebounceTimer.Tick += OnLauncherSearchDebounceTimerTick;
+        _systemMonitorTimer.Interval = SystemMonitorRefreshInterval;
+        _systemMonitorTimer.Tick += OnSystemMonitorTimerTick;
+        if (Settings.SystemMonitorEnabled)
+        {
+            StartSystemMonitor();
+        }
+
         Observe(InitializeFileIndexAsync(), "initialize file index");
         _ratesRefreshTimer.Interval = ExchangeRateRefreshInterval;
         _ratesRefreshTimer.Tick += OnRatesRefreshTimerTick;
@@ -250,6 +265,30 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     {
         get => _indexProgressText;
         private set => SetProperty(ref _indexProgressText, value);
+    }
+
+    public string SystemMonitorNetworkText
+    {
+        get => _systemMonitorNetworkText;
+        private set => SetProperty(ref _systemMonitorNetworkText, value);
+    }
+
+    public string SystemMonitorCpuText
+    {
+        get => _systemMonitorCpuText;
+        private set => SetProperty(ref _systemMonitorCpuText, value);
+    }
+
+    public string SystemMonitorGpuText
+    {
+        get => _systemMonitorGpuText;
+        private set => SetProperty(ref _systemMonitorGpuText, value);
+    }
+
+    public string SystemMonitorMemoryText
+    {
+        get => _systemMonitorMemoryText;
+        private set => SetProperty(ref _systemMonitorMemoryText, value);
     }
 
     public string LauncherQuery
@@ -512,6 +551,31 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public bool SystemMonitorEnabled
+    {
+        get => Settings.SystemMonitorEnabled;
+        set
+        {
+            if (Settings.SystemMonitorEnabled == value)
+            {
+                return;
+            }
+
+            Settings.SystemMonitorEnabled = value;
+            if (value)
+            {
+                StartSystemMonitor();
+            }
+            else
+            {
+                StopSystemMonitor();
+            }
+
+            OnPropertyChanged();
+            Save();
+        }
+    }
+
     public string LogDirectory
     {
         get => AppDiagnostics.ResolveLogDirectory(Settings.LogDirectory);
@@ -542,6 +606,50 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (dialog.ShowDialog() == WinFormsDialogResult.OK)
         {
             LogDirectory = dialog.SelectedPath;
+        }
+    }
+
+    private void StartSystemMonitor()
+    {
+        Observe(RefreshSystemMonitorAsync(), "refresh system monitor");
+        _systemMonitorTimer.Start();
+    }
+
+    private void StopSystemMonitor()
+    {
+        _systemMonitorTimer.Stop();
+        SystemMonitorNetworkText = "↓ 0 B/s  ↑ 0 B/s";
+        SystemMonitorCpuText = "CPU 0%";
+        SystemMonitorGpuText = "GPU --";
+        SystemMonitorMemoryText = "内存 0%";
+    }
+
+    private void OnSystemMonitorTimerTick(object? sender, EventArgs e)
+    {
+        Observe(RefreshSystemMonitorAsync(), "refresh system monitor");
+    }
+
+    private async Task RefreshSystemMonitorAsync()
+    {
+        if (_disposed || !Settings.SystemMonitorEnabled || _isRefreshingSystemMonitor)
+        {
+            return;
+        }
+
+        _isRefreshingSystemMonitor = true;
+        try
+        {
+            var snapshot = await Task.Run(_systemMonitor.GetSnapshot);
+            SystemMonitorNetworkText = $"↓ {FormatBytesPerSecond(snapshot.DownloadBytesPerSecond)}  ↑ {FormatBytesPerSecond(snapshot.UploadBytesPerSecond)}";
+            SystemMonitorCpuText = $"CPU {snapshot.CpuUsagePercent:0}%";
+            SystemMonitorGpuText = snapshot.GpuUsagePercent is { } gpuUsage
+                ? $"GPU {gpuUsage:0}%"
+                : "GPU --";
+            SystemMonitorMemoryText = $"内存 {snapshot.MemoryUsagePercent:0}%";
+        }
+        finally
+        {
+            _isRefreshingSystemMonitor = false;
         }
     }
 
@@ -665,6 +773,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _indexProgressTimer.Tick -= OnIndexProgressTimerTick;
         _launcherSearchDebounceTimer.Stop();
         _launcherSearchDebounceTimer.Tick -= OnLauncherSearchDebounceTimerTick;
+        _systemMonitorTimer.Stop();
+        _systemMonitorTimer.Tick -= OnSystemMonitorTimerTick;
         _ratesRefreshTimer.Stop();
         _ratesRefreshTimer.Tick -= OnRatesRefreshTimerTick;
         _clipboardMonitor.Stop();
@@ -672,6 +782,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         CancelSearch(_launcherSearchCancellation);
         _launcherSearchCancellation?.Dispose();
         _fileSearch.Dispose();
+        _systemMonitor.Dispose();
         _fileInitializationCancellation.Dispose();
     }
 
@@ -1590,6 +1701,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static string FormatCurrencyNumber(double value)
     {
         return value.ToString("#,0.##", CultureInfo.InvariantCulture);
+    }
+
+    private static string FormatBytesPerSecond(double bytesPerSecond)
+    {
+        string[] units = ["B/s", "KB/s", "MB/s", "GB/s"];
+        var value = Math.Max(0, bytesPerSecond);
+        var unitIndex = 0;
+        while (value >= 1024 && unitIndex < units.Length - 1)
+        {
+            value /= 1024;
+            unitIndex++;
+        }
+
+        return unitIndex == 0
+            ? $"{value:0} {units[unitIndex]}"
+            : $"{value:0.0} {units[unitIndex]}";
     }
 
     private void OnSelectedNoteChanged(object? sender, PropertyChangedEventArgs e)

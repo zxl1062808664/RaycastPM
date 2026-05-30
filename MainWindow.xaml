@@ -1300,6 +1300,7 @@
                                 <Grid.RowDefinitions>
                                     <RowDefinition Height="64" />
                                     <RowDefinition Height="64" />
+                                    <RowDefinition Height="64" />
                                     <RowDefinition Height="86" />
                                 </Grid.RowDefinitions>
                                 <Grid.ColumnDefinitions>
@@ -1366,12 +1367,41 @@
 
                                 <Border Grid.Row="2" Grid.ColumnSpan="4" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
                                 <TextBlock Grid.Row="2"
-                                           Text="日志输出"
+                                           Text="实时监控"
                                            FontSize="17"
                                            FontWeight="SemiBold"
                                            VerticalAlignment="Center"
                                            Margin="14,0,0,0" />
                                 <ToggleButton Grid.Row="2"
+                                              Grid.Column="1"
+                                              Width="84"
+                                              HorizontalAlignment="Left"
+                                              VerticalAlignment="Center"
+                                              Style="{StaticResource ToolbarToggleButtonStyle}"
+                                              IsChecked="{Binding SystemMonitorEnabled, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}">
+                                    <TextBlock>
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Text" Value="关闭" />
+                                                <Setter Property="Foreground" Value="{StaticResource SettingsTextBrush}" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsChecked, RelativeSource={RelativeSource AncestorType=ToggleButton}}" Value="True">
+                                                        <Setter Property="Text" Value="开启" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </ToggleButton>
+
+                                <Border Grid.Row="3" Grid.ColumnSpan="4" Height="1" Background="#383838" VerticalAlignment="Top" Margin="14,0" />
+                                <TextBlock Grid.Row="3"
+                                           Text="日志输出"
+                                           FontSize="17"
+                                           FontWeight="SemiBold"
+                                           VerticalAlignment="Center"
+                                           Margin="14,0,0,0" />
+                                <ToggleButton Grid.Row="3"
                                               Grid.Column="1"
                                               Width="84"
                                               HorizontalAlignment="Left"
@@ -1392,13 +1422,13 @@
                                         </TextBlock.Style>
                                     </TextBlock>
                                 </ToggleButton>
-                                <TextBox Grid.Row="2"
+                                <TextBox Grid.Row="3"
                                          Grid.Column="2"
                                          Height="34"
                                          VerticalAlignment="Center"
                                          Text="{Binding LogDirectory, Mode=TwoWay, UpdateSourceTrigger=LostFocus}"
                                          IsEnabled="{Binding LoggingEnabled}" />
-                                <Button Grid.Row="2"
+                                <Button Grid.Row="3"
                                         Grid.Column="3"
                                         Content="浏览"
                                         Style="{StaticResource ToolbarButtonStyle}"

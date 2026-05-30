@@ -18,6 +18,7 @@ public partial class MainWindow : Window
     private readonly GlobalHotKeyService _hotKeys = new();
     private readonly System.Drawing.Icon _appIcon = LoadTrayIcon();
     private readonly Forms.NotifyIcon _trayIcon;
+    private SystemMonitorWindow? _systemMonitorWindow;
     private IntPtr _pasteTargetWindow;
     private bool _isExiting;
 
@@ -26,6 +27,7 @@ public partial class MainWindow : Window
         InitializeComponent();
         DataContext = _viewModel;
         _trayIcon = CreateTrayIcon();
+        _viewModel.PropertyChanged += OnViewModelPropertyChanged;
         Loaded += OnLoaded;
         StateChanged += OnStateChanged;
         Deactivated += OnDeactivated;
@@ -46,6 +48,40 @@ public partial class MainWindow : Window
 
             RestoreWindow();
         });
+        UpdateSystemMonitorWindow();
+    }
+
+    private void OnViewModelPropertyChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (e.PropertyName == nameof(MainViewModel.SystemMonitorEnabled))
+        {
+            UpdateSystemMonitorWindow();
+        }
+    }
+
+    private void UpdateSystemMonitorWindow()
+    {
+        if (_viewModel.SystemMonitorEnabled)
+        {
+            if (_systemMonitorWindow is null)
+            {
+                _systemMonitorWindow = new SystemMonitorWindow
+                {
+                    DataContext = _viewModel
+                };
+                _systemMonitorWindow.Closed += (_, _) => _systemMonitorWindow = null;
+            }
+
+            _systemMonitorWindow.Topmost = true;
+            if (!_systemMonitorWindow.IsVisible)
+            {
+                _systemMonitorWindow.Show();
+            }
+
+            return;
+        }
+
+        _systemMonitorWindow?.Hide();
     }
 
     private Forms.NotifyIcon CreateTrayIcon()
@@ -167,6 +203,9 @@ public partial class MainWindow : Window
         }
 
         _viewModel.Save();
+        _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
+        _systemMonitorWindow?.Close();
+        _systemMonitorWindow = null;
         _viewModel.Dispose();
         _hotKeys.Dispose();
         _trayIcon.Visible = false;
