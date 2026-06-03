@@ -15,7 +15,9 @@
             BorderBrush="{StaticResource BorderBrushStrong}"
             BorderThickness="1"
             CornerRadius="4"
-            MouseLeftButtonDown="MonitorRoot_MouseLeftButtonDown">
+            MouseLeftButtonDown="MonitorRoot_MouseLeftButtonDown"
+            MouseLeftButtonUp="MonitorRoot_MouseLeftButtonUp"
+            MouseMove="MonitorRoot_MouseMove">
         <Grid Margin="14,0">
             <Grid.ColumnDefinitions>
                 <ColumnDefinition Width="210" />
