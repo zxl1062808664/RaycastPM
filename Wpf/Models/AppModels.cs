@@ -87,11 +87,19 @@ public sealed class InstalledApp
     public int LaunchCount { get; set; }
 }
 
+public enum LauncherActionKind
+{
+    OpenPath,
+    OpenUrl,
+    WebSearch
+}
+
 public sealed class LauncherSearchResult
 {
     public required string Name { get; init; }
     public required string Path { get; init; }
     public required string Kind { get; init; }
+    public LauncherActionKind ActionKind { get; init; } = LauncherActionKind.OpenPath;
     public int LaunchCount { get; set; }
     public int SearchScore { get; set; }
     public string SearchSortName { get; set; } = string.Empty;

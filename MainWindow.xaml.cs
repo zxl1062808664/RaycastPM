@@ -217,6 +217,15 @@ public partial class MainWindow : Window
         {
             e.Handled = true;
             HideInterface();
+            return;
+        }
+
+        if (e.Key == Key.Enter
+            && _viewModel.SelectedSection == AppSection.Launcher
+            && _viewModel.OpenSelectedAppCommand.CanExecute(null))
+        {
+            e.Handled = true;
+            _viewModel.OpenSelectedAppCommand.Execute(null);
         }
     }
 

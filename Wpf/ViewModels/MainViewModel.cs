@@ -4,6 +4,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Globalization;
 using System.IO;
+using System.Net;
 using System.Windows;
 using System.Windows.Media.Imaging;
 using System.Windows.Threading;
@@ -21,6 +22,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 {
     private static readonly TimeSpan ExchangeRateRefreshInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan SystemMonitorRefreshInterval = TimeSpan.FromSeconds(1);
+    private const string WebSearchUrlTemplate = "https://www.bing.com/search?q={0}";
     private static readonly IReadOnlyList<string> HotKeyOptions =
     [
         "Space",
@@ -1162,6 +1164,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             return;
         }
 
+        if (TryCreateDirectNavigationResult(query, out var directNavigationResult))
+        {
+            _launcherSearchCancellation = null;
+            Replace(FilteredApps, new[] { directNavigationResult });
+            SelectedApp = FilteredApps.FirstOrDefault();
+            IsSearchingLauncher = false;
+            LauncherStatusText = directNavigationResult.ActionKind == LauncherActionKind.OpenUrl
+                ? "按回车或双击使用默认浏览器打开网址"
+                : "按回车或双击使用默认浏览器搜索网页";
+            return;
+        }
+
         var cancellation = new CancellationTokenSource();
         _launcherSearchCancellation = cancellation;
         IsSearchingLauncher = true;
@@ -1183,14 +1197,34 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 .ThenByDescending(item => item.LaunchCount)
                 .ThenBy(item => item.Name, StringComparer.CurrentCultureIgnoreCase)
                 .ThenBy(item => item.Path, StringComparer.OrdinalIgnoreCase)
-                .Take(80);
+                .Take(80)
+                .ToList();
+            var localResultCount = rankedResults.Count;
+            var webSearchResult = ShouldOfferWebSearch(query, localResultCount)
+                ? CreateWebSearchResult(query)
+                : null;
+
+            if (webSearchResult is not null)
+            {
+                if (localResultCount == 0 || LooksLikeNaturalWebSearch(query))
+                {
+                    rankedResults.Insert(0, webSearchResult);
+                }
+                else if (rankedResults.Count < 80)
+                {
+                    rankedResults.Add(webSearchResult);
+                }
+            }
+
             Replace(FilteredApps, rankedResults);
             SelectedApp = FilteredApps.FirstOrDefault();
             RefreshIndexProgress();
             var indexText = response.IsIndexing ? $"，索引中 {response.IndexedCount:N0} 项" : string.Empty;
-            LauncherStatusText = FilteredApps.Count == 0
+            LauncherStatusText = localResultCount == 0 && webSearchResult is not null
+                ? $"没有本机文件结果，可使用默认浏览器搜索网页{indexText}"
+                : localResultCount == 0
                 ? $"没有找到本机文件结果{indexText}"
-                : $"{FilteredApps.Count} 个本机文件结果{indexText}";
+                : $"{localResultCount} 个本机文件结果{indexText}";
         }
         catch (OperationCanceledException)
         {
@@ -1237,6 +1271,345 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    private bool ShouldOfferWebSearch(string query, int localResultCount)
+    {
+        if (CalculatorResult is not null || CurrencyResult is not null)
+        {
+            return false;
+        }
+
+        if (!HasSearchableText(query) || IsLikelyLocalSearchSyntax(query))
+        {
+            return false;
+        }
+
+        return localResultCount == 0 || LooksLikeNaturalWebSearch(query);
+    }
+
+    private static bool TryCreateDirectNavigationResult(string query, out LauncherSearchResult result)
+    {
+        if (TryCreateUrlResult(query, out result))
+        {
+            return true;
+        }
+
+        if (TryGetExplicitWebSearchText(query, out var searchText))
+        {
+            result = CreateWebSearchResult(searchText);
+            return true;
+        }
+
+        result = null!;
+        return false;
+    }
+
+    private static bool TryCreateUrlResult(string query, out LauncherSearchResult result)
+    {
+        result = null!;
+        var text = query.Trim();
+        if (!HasSearchableText(text)
+            || text.Any(char.IsWhiteSpace)
+            || text.Contains('\\')
+            || IsLikelyDrivePath(text))
+        {
+            return false;
+        }
+
+        string url;
+        if (Uri.TryCreate(text, UriKind.Absolute, out var absoluteUri)
+            && (absoluteUri.Scheme.Equals(Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase)
+                || absoluteUri.Scheme.Equals(Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase)))
+        {
+            url = absoluteUri.AbsoluteUri;
+        }
+        else if (LooksLikeUrlWithoutScheme(text))
+        {
+            url = $"https://{text}";
+        }
+        else
+        {
+            return false;
+        }
+
+        result = new LauncherSearchResult
+        {
+            Name = $"打开网址：{text}",
+            Path = url,
+            Kind = "网址",
+            ActionKind = LauncherActionKind.OpenUrl,
+            SearchScore = int.MaxValue,
+            SearchSortName = text.ToLowerInvariant()
+        };
+        return true;
+    }
+
+    private static bool TryGetExplicitWebSearchText(string query, out string searchText)
+    {
+        var text = query.Trim();
+        if (text.StartsWith("?", StringComparison.Ordinal))
+        {
+            searchText = text[1..].Trim();
+            return HasSearchableText(searchText);
+        }
+
+        foreach (var prefix in new[] { "web:", "search:", "搜索:", "搜:" })
+        {
+            if (!text.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            {
+                continue;
+            }
+
+            searchText = text[prefix.Length..].Trim();
+            return HasSearchableText(searchText);
+        }
+
+        foreach (var prefix in new[] { "搜索 ", "搜 " })
+        {
+            if (!text.StartsWith(prefix, StringComparison.CurrentCultureIgnoreCase))
+            {
+                continue;
+            }
+
+            searchText = text[prefix.Length..].Trim();
+            return HasSearchableText(searchText);
+        }
+
+        searchText = string.Empty;
+        return false;
+    }
+
+    private static LauncherSearchResult CreateWebSearchResult(string query)
+    {
+        var searchText = query.Trim();
+        return new LauncherSearchResult
+        {
+            Name = $"搜索网页：{searchText}",
+            Path = BuildWebSearchUrl(searchText),
+            Kind = "网页搜索",
+            ActionKind = LauncherActionKind.WebSearch,
+            SearchScore = int.MaxValue - 1,
+            SearchSortName = searchText.ToLowerInvariant()
+        };
+    }
+
+    private static string BuildWebSearchUrl(string query)
+    {
+        return string.Format(
+            CultureInfo.InvariantCulture,
+            WebSearchUrlTemplate,
+            WebUtility.UrlEncode(query));
+    }
+
+    private static bool LooksLikeNaturalWebSearch(string query)
+    {
+        var text = query.Trim();
+        if (!HasSearchableText(text) || IsLikelyLocalSearchSyntax(text))
+        {
+            return false;
+        }
+
+        if (text.EndsWith("?", StringComparison.Ordinal) || text.EndsWith("？", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        foreach (var marker in new[]
+                 {
+                     "如何",
+                     "怎么",
+                     "怎样",
+                     "为什么",
+                     "是什么",
+                     "哪里",
+                     "教程",
+                     "报错",
+                     "错误",
+                     "安装",
+                     "配置"
+                 })
+        {
+            if (text.Contains(marker, StringComparison.CurrentCultureIgnoreCase))
+            {
+                return true;
+            }
+        }
+
+        var lower = $" {text.ToLowerInvariant()} ";
+        foreach (var marker in new[]
+                 {
+                     " how ",
+                     " what ",
+                     " why ",
+                     " where ",
+                     " when ",
+                     " who ",
+                     " tutorial ",
+                     " error ",
+                     " exception ",
+                     " install ",
+                     " configure ",
+                     " config ",
+                     " fix ",
+                     " download "
+                 })
+        {
+            if (lower.Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool LooksLikeUrlWithoutScheme(string text)
+    {
+        var host = text;
+        var hostEnd = host.IndexOfAny(['/', '?', '#']);
+        if (hostEnd >= 0)
+        {
+            host = host[..hostEnd];
+        }
+
+        var portStart = host.LastIndexOf(':');
+        if (portStart >= 0)
+        {
+            var port = host[(portStart + 1)..];
+            if (port.Length == 0 || !port.All(char.IsDigit))
+            {
+                return false;
+            }
+
+            host = host[..portStart];
+        }
+
+        if (host.Equals("localhost", StringComparison.OrdinalIgnoreCase)
+            || IPAddress.TryParse(host, out _))
+        {
+            return true;
+        }
+
+        if (host.Length == 0 || !host.Contains('.') || host.Contains(".."))
+        {
+            return false;
+        }
+
+        var labels = host.Split('.', StringSplitOptions.RemoveEmptyEntries);
+        if (labels.Length < 2)
+        {
+            return false;
+        }
+
+        var tld = labels[^1];
+        return tld.Length >= 2
+            && tld.All(char.IsLetter)
+            && (host.StartsWith("www.", StringComparison.OrdinalIgnoreCase) || IsCommonWebTld(tld))
+            && labels.All(IsValidDomainLabel);
+    }
+
+    private static bool IsCommonWebTld(string tld)
+    {
+        return tld.ToLowerInvariant() is
+            "com" or
+            "net" or
+            "org" or
+            "io" or
+            "dev" or
+            "app" or
+            "ai" or
+            "co" or
+            "cn" or
+            "us" or
+            "uk" or
+            "jp" or
+            "de" or
+            "fr" or
+            "ru" or
+            "edu" or
+            "gov" or
+            "info" or
+            "biz" or
+            "me" or
+            "tv" or
+            "xyz" or
+            "site" or
+            "online" or
+            "store" or
+            "tech" or
+            "top" or
+            "cc" or
+            "cloud";
+    }
+
+    private static bool IsValidDomainLabel(string label)
+    {
+        return label.Length > 0
+            && label[0] != '-'
+            && label[^1] != '-'
+            && label.All(character => char.IsLetterOrDigit(character) || character == '-');
+    }
+
+    private static bool IsLikelyLocalSearchSyntax(string query)
+    {
+        var text = query.Trim();
+        if (text.Contains('\\')
+            || IsLikelyDrivePath(text)
+            || text.StartsWith("/", StringComparison.Ordinal)
+            || text.StartsWith("./", StringComparison.Ordinal)
+            || text.StartsWith("../", StringComparison.Ordinal)
+            || text.Contains('*'))
+        {
+            return true;
+        }
+
+        if (text.Contains('?')
+            && !text.EndsWith("?", StringComparison.Ordinal)
+            && !text.EndsWith("？", StringComparison.Ordinal))
+        {
+            return true;
+        }
+
+        var lower = text.ToLowerInvariant();
+        foreach (var marker in new[]
+                 {
+                     "file:",
+                     "files:",
+                     "folder:",
+                     "folders:",
+                     "ext:",
+                     "path:",
+                     "parent:",
+                     "regex:",
+                     "case:",
+                     "nocase:",
+                     "noregex:",
+                     "doc:",
+                     "pic:",
+                     "audio:",
+                     "video:",
+                     "zip:",
+                     "exe:"
+                 })
+        {
+            if (lower.Contains(marker, StringComparison.Ordinal))
+            {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsLikelyDrivePath(string text)
+    {
+        return text.Length >= 2 && char.IsLetter(text[0]) && text[1] == ':';
+    }
+
+    private static bool HasSearchableText(string text)
+    {
+        return !string.IsNullOrWhiteSpace(text) && text.Any(char.IsLetterOrDigit);
+    }
+
     private LauncherSearchResult ApplyUsageCount(LauncherSearchResult item)
     {
         return new LauncherSearchResult
@@ -1244,6 +1617,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Name = item.Name,
             Path = item.Path,
             Kind = item.Kind,
+            ActionKind = item.ActionKind,
             LaunchCount = GetLaunchCount(item.Path),
             SearchScore = item.SearchScore,
             SearchSortName = item.SearchSortName
@@ -1257,6 +1631,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             Name = item.Name,
             Path = item.Path,
             Kind = item.Kind,
+            ActionKind = item.ActionKind,
             LaunchCount = item.LaunchCount,
             SearchScore = item.SearchScore,
             SearchSortName = item.SearchSortName
@@ -1358,6 +1733,13 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         try
         {
+            if (SelectedApp.ActionKind is LauncherActionKind.OpenUrl or LauncherActionKind.WebSearch)
+            {
+                Process.Start(new ProcessStartInfo(SelectedApp.Path) { UseShellExecute = true });
+                IsPopupOpen = false;
+                return;
+            }
+
             Process.Start(new ProcessStartInfo(SelectedApp.Path) { UseShellExecute = true });
             IncrementLaunchCount(SelectedApp);
             IsPopupOpen = false;
