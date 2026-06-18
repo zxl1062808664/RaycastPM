@@ -3,8 +3,10 @@ using System.IO;
 using System.Runtime.InteropServices;
 using System.Text;
 using System.Windows;
+using System.Windows.Controls;
 using System.Windows.Input;
 using System.Windows.Interop;
+using System.Windows.Media;
 using RaycastPM.Models;
 using RaycastPM.Services;
 using RaycastPM.ViewModels;
@@ -32,6 +34,7 @@ public partial class MainWindow : Window
         IsVisibleChanged += OnIsVisibleChanged;
         StateChanged += OnStateChanged;
         Deactivated += OnDeactivated;
+        PreviewMouseDown += OnPreviewMouseDown;
         PreviewKeyDown += OnPreviewKeyDown;
         Closing += OnClosing;
     }
@@ -118,6 +121,7 @@ public partial class MainWindow : Window
         menu.Items.Add(CreateTrayMenuItem("导航", () => ShowFromTray(AppSection.Launcher)));
         menu.Items.Add(CreateTrayMenuItem("剪贴板", () => ShowFromTray(AppSection.Clipboard)));
         menu.Items.Add(CreateTrayMenuItem("记事本", () => ShowFromTray(AppSection.Notes)));
+        menu.Items.Add(CreateTrayMenuItem("计划", () => ShowFromTray(AppSection.Plans)));
         menu.Items.Add(CreateTrayMenuItem("设置", () => ShowFromTray(AppSection.Settings)));
 
         var trayIcon = new Forms.NotifyIcon
@@ -178,7 +182,9 @@ public partial class MainWindow : Window
 
     private bool ShouldAutoHide()
     {
-        return !_isExiting && _viewModel.SelectedSection != AppSection.Notes;
+        return !_isExiting
+            && _viewModel.SelectedSection != AppSection.Notes
+            && _viewModel.SelectedSection != AppSection.Plans;
     }
 
     private void HideInterface()
@@ -209,6 +215,11 @@ public partial class MainWindow : Window
         {
             HideInterface();
         }
+    }
+
+    private void OnPreviewMouseDown(object sender, MouseButtonEventArgs e)
+    {
+        ClosePlanDatePickers(e.OriginalSource);
     }
 
     private void OnPreviewKeyDown(object sender, System.Windows.Input.KeyEventArgs e)
@@ -296,6 +307,65 @@ public partial class MainWindow : Window
         }
 
         return false;
+    }
+
+    private void ClosePlanDatePickers(object source)
+    {
+        if (_viewModel.SelectedSection != AppSection.Plans)
+        {
+            return;
+        }
+
+        var current = source as DependencyObject;
+        while (current is not null)
+        {
+            if (current is DatePicker or Calendar)
+            {
+                return;
+            }
+
+            DependencyObject? visualParent = null;
+            try
+            {
+                visualParent = System.Windows.Media.VisualTreeHelper.GetParent(current);
+            }
+            catch
+            {
+            }
+
+            current = visualParent ?? LogicalTreeHelper.GetParent(current);
+        }
+
+        foreach (var picker in FindVisualChildren<DatePicker>(this))
+        {
+            if (picker.IsDropDownOpen)
+            {
+                picker.IsDropDownOpen = false;
+            }
+        }
+    }
+
+    private static IEnumerable<T> FindVisualChildren<T>(DependencyObject root) where T : DependencyObject
+    {
+        if (root is null)
+        {
+            yield break;
+        }
+
+        var childCount = VisualTreeHelper.GetChildrenCount(root);
+        for (var index = 0; index < childCount; index++)
+        {
+            var child = VisualTreeHelper.GetChild(root, index);
+            if (child is T typed)
+            {
+                yield return typed;
+            }
+
+            foreach (var descendant in FindVisualChildren<T>(child))
+            {
+                yield return descendant;
+            }
+        }
     }
 
     private static bool IsInsideListBoxItem(object source)

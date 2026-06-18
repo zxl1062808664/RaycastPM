@@ -98,6 +98,10 @@ public sealed class StateStore
             .Where(item => item is not null)
             .Select(NormalizeNote)
             .ToList() ?? [];
+        state.PlanItems = state.PlanItems?
+            .Where(item => item is not null)
+            .Select(NormalizePlanItem)
+            .ToList() ?? [];
         return state;
     }
 
@@ -125,6 +129,27 @@ public sealed class StateStore
         if (item.Kind != ClipboardItemKind.Image)
         {
             item.ImageBytes = null;
+        }
+
+        return item;
+    }
+
+    private static PlanItem NormalizePlanItem(PlanItem item)
+    {
+        item.Title = string.IsNullOrWhiteSpace(item.Title) ? "新计划" : item.Title.Trim();
+        item.Description ??= string.Empty;
+        item.Images ??= [];
+        for (var index = item.Images.Count - 1; index >= 0; index--)
+        {
+            if (item.Images[index].ImageBytes.Length == 0)
+            {
+                item.Images.RemoveAt(index);
+            }
+        }
+
+        if (item.StartAt == default)
+        {
+            item.StartAt = item.CreatedAt.LocalDateTime;
         }
 
         return item;

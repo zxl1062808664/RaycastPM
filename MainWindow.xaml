@@ -178,6 +178,308 @@
             <Setter Property="TextTrimming" Value="CharacterEllipsis" />
         </Style>
 
+        <Style x:Key="PlanTimeComboBoxTextBoxStyle" TargetType="TextBox" BasedOn="{StaticResource {x:Type TextBox}}">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="MinHeight" Value="0" />
+        </Style>
+
+        <Style x:Key="PlanComboBoxItemStyle" TargetType="ComboBoxItem">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelRaisedBrush}" />
+            <Setter Property="Padding" Value="10,7" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBoxItem">
+                        <Border x:Name="Root"
+                                Background="{TemplateBinding Background}"
+                                CornerRadius="4"
+                                Padding="{TemplateBinding Padding}">
+                            <ContentPresenter VerticalAlignment="Center"
+                                              TextElement.Foreground="{TemplateBinding Foreground}" />
+                        </Border>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsHighlighted" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="#243244" />
+                            </Trigger>
+                            <Trigger Property="IsSelected" Value="True">
+                                <Setter TargetName="Root" Property="Background" Value="{StaticResource SelectionBrush}" />
+                                <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PlanTimeComboBoxStyle" TargetType="ComboBox">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="#333333" />
+            <Setter Property="BorderBrush" Value="#4A4A4A" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="MinHeight" Value="34" />
+            <Setter Property="SnapsToDevicePixels" Value="True" />
+            <Setter Property="ItemContainerStyle" Value="{StaticResource PlanComboBoxItemStyle}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ComboBox">
+                        <Grid>
+                            <Border x:Name="Root"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="4" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="34" />
+                                </Grid.ColumnDefinitions>
+                                <ContentPresenter x:Name="ContentSite"
+                                                  Grid.Column="0"
+                                                  IsHitTestVisible="False"
+                                                  Content="{TemplateBinding SelectionBoxItem}"
+                                                  ContentTemplate="{TemplateBinding SelectionBoxItemTemplate}"
+                                                  ContentStringFormat="{TemplateBinding SelectionBoxItemStringFormat}"
+                                                  Margin="10,0,0,0"
+                                                  TextElement.Foreground="{TemplateBinding Foreground}"
+                                                  VerticalAlignment="Center"
+                                                  HorizontalAlignment="Left" />
+                                <TextBox x:Name="PART_EditableTextBox"
+                                         Grid.Column="0"
+                                         Style="{StaticResource PlanTimeComboBoxTextBoxStyle}"
+                                         Margin="10,0,4,0"
+                                         Foreground="{TemplateBinding Foreground}"
+                                         CaretBrush="{StaticResource AccentBrush}"
+                                         HorizontalContentAlignment="{TemplateBinding HorizontalContentAlignment}"
+                                         VerticalContentAlignment="Center"
+                                         Visibility="Collapsed" />
+                                <TextBlock Grid.Column="1"
+                                           Text="▼"
+                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                           FontSize="12"
+                                           HorizontalAlignment="Center"
+                                           VerticalAlignment="Center"
+                                           IsHitTestVisible="False" />
+                            </Grid>
+                            <ToggleButton Focusable="False"
+                                          Background="Transparent"
+                                          BorderThickness="0"
+                                          IsChecked="{Binding IsDropDownOpen, Mode=TwoWay, RelativeSource={RelativeSource TemplatedParent}}"
+                                          ClickMode="Press"
+                                          Opacity="0" />
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{TemplateBinding IsDropDownOpen}"
+                                   Placement="Bottom"
+                                   PopupAnimation="Fade">
+                                <Border Background="{StaticResource PanelRaisedBrush}"
+                                        BorderBrush="{StaticResource BorderBrushStrong}"
+                                        BorderThickness="1"
+                                        CornerRadius="4"
+                                        MinWidth="{Binding ActualWidth, RelativeSource={RelativeSource TemplatedParent}}"
+                                        MaxHeight="260">
+                                    <ScrollViewer CanContentScroll="True"
+                                                  Padding="4">
+                                        <ItemsPresenter />
+                                    </ScrollViewer>
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsEditable" Value="True">
+                                <Setter TargetName="ContentSite" Property="Visibility" Value="Collapsed" />
+                                <Setter TargetName="PART_EditableTextBox" Property="Visibility" Value="Visible" />
+                            </Trigger>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PlanDatePickerTextBoxStyle"
+               TargetType="DatePickerTextBox"
+               BasedOn="{StaticResource {x:Type DatePickerTextBox}}">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="CaretBrush" Value="{StaticResource AccentBrush}" />
+            <Setter Property="VerticalContentAlignment" Value="Center" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DatePickerTextBox">
+                        <Border Background="{TemplateBinding Background}"
+                                BorderThickness="0">
+                            <Grid>
+                                <ScrollViewer x:Name="PART_ContentElement"
+                                              Focusable="False"
+                                              HorizontalScrollBarVisibility="Hidden"
+                                              VerticalScrollBarVisibility="Hidden" />
+                                <ContentControl x:Name="PART_Watermark"
+                                                Foreground="{StaticResource TextMutedBrush}"
+                                                IsHitTestVisible="False"
+                                                Visibility="Collapsed" />
+                            </Grid>
+                        </Border>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PlanDatePickerStyle" TargetType="DatePicker" BasedOn="{StaticResource {x:Type DatePicker}}">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="{StaticResource PanelInsetBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushSoft}" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Height" Value="34" />
+            <Setter Property="Width" Value="112" />
+            <Setter Property="FontSize" Value="13" />
+            <Setter Property="Padding" Value="0" />
+            <Setter Property="CalendarStyle" Value="{StaticResource PlanCalendarStyle}" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="DatePicker">
+                        <Grid x:Name="PART_Root"
+                              SnapsToDevicePixels="True">
+                            <Border x:Name="Root"
+                                    Background="{TemplateBinding Background}"
+                                    BorderBrush="{TemplateBinding BorderBrush}"
+                                    BorderThickness="{TemplateBinding BorderThickness}"
+                                    CornerRadius="4" />
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="30" />
+                                </Grid.ColumnDefinitions>
+                                <DatePickerTextBox x:Name="PART_TextBox"
+                                                   Grid.Column="0"
+                                                   Style="{StaticResource PlanDatePickerTextBoxStyle}"
+                                                   Margin="10,0,4,0"
+                                                   VerticalContentAlignment="Center" />
+                                <Button x:Name="PART_Button"
+                                        Grid.Column="1"
+                                        Focusable="False"
+                                        Background="Transparent"
+                                        BorderThickness="0"
+                                        Padding="0">
+                                    <TextBlock Text="▼"
+                                               Foreground="{StaticResource TextSecondaryBrush}"
+                                               FontSize="12"
+                                               HorizontalAlignment="Center"
+                                               VerticalAlignment="Center" />
+                                </Button>
+                            </Grid>
+                            <Popup x:Name="PART_Popup"
+                                   AllowsTransparency="True"
+                                   Focusable="False"
+                                   IsOpen="{Binding IsDropDownOpen, RelativeSource={RelativeSource TemplatedParent}, Mode=TwoWay}"
+                                   Placement="Bottom"
+                                   PopupAnimation="Fade"
+                                   StaysOpen="False">
+                                <Border Background="#16212C"
+                                        BorderBrush="#243244"
+                                        BorderThickness="1"
+                                        CornerRadius="12"
+                                        Padding="8">
+                                    <Calendar Style="{StaticResource PlanCalendarStyle}" />
+                                </Border>
+                            </Popup>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsKeyboardFocusWithin" Value="True">
+                                <Setter TargetName="Root" Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0.45" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style x:Key="PlanCalendarItemStyle" TargetType="CalendarItem">
+            <Setter Property="Background" Value="{StaticResource PanelRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushStrong}" />
+            <Setter Property="BorderThickness" Value="0" />
+        </Style>
+
+        <Style x:Key="PlanCalendarButtonStyle" TargetType="CalendarButton">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Padding" Value="2" />
+        </Style>
+
+        <Style x:Key="PlanCalendarDayButtonStyle" TargetType="CalendarDayButton">
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderBrush" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="1" />
+            <Setter Property="Padding" Value="2" />
+            <Setter Property="Margin" Value="1" />
+            <Setter Property="FontWeight" Value="Normal" />
+            <Style.Triggers>
+                <Trigger Property="IsHighlighted" Value="True">
+                    <Setter Property="Background" Value="#363636" />
+                </Trigger>
+                <Trigger Property="IsSelected" Value="True">
+                    <Setter Property="Background" Value="{StaticResource AccentBrush}" />
+                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+                </Trigger>
+                <Trigger Property="IsToday" Value="True">
+                    <Setter Property="BorderBrush" Value="{StaticResource AccentBrush}" />
+                </Trigger>
+                <Trigger Property="IsInactive" Value="True">
+                    <Setter Property="Opacity" Value="0.45" />
+                </Trigger>
+                <Trigger Property="IsBlackedOut" Value="True">
+                    <Setter Property="Opacity" Value="0.25" />
+                </Trigger>
+            </Style.Triggers>
+        </Style>
+
+        <Style x:Key="PlanCalendarStyle" TargetType="Calendar" BasedOn="{StaticResource {x:Type Calendar}}">
+            <Setter Property="Background" Value="{StaticResource PanelRaisedBrush}" />
+            <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+            <Setter Property="BorderBrush" Value="{StaticResource BorderBrushStrong}" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="CalendarItemStyle" Value="{StaticResource PlanCalendarItemStyle}" />
+            <Setter Property="CalendarButtonStyle" Value="{StaticResource PlanCalendarButtonStyle}" />
+            <Setter Property="CalendarDayButtonStyle" Value="{StaticResource PlanCalendarDayButtonStyle}" />
+            <Style.Resources>
+                <SolidColorBrush x:Key="{x:Static SystemColors.WindowBrushKey}" Color="#16212C" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.ControlBrushKey}" Color="#16212C" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.ControlLightBrushKey}" Color="#243244" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.ControlDarkBrushKey}" Color="#243244" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.ControlTextBrushKey}" Color="#F4F7FB" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.GrayTextBrushKey}" Color="#7F8A99" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightBrushKey}" Color="#C88752" />
+                <SolidColorBrush x:Key="{x:Static SystemColors.HighlightTextBrushKey}" Color="#0F1722" />
+            </Style.Resources>
+        </Style>
+
         <DataTemplate x:Key="LauncherTemplate">
             <Grid Background="{StaticResource PanelInsetBrush}">
                 <Grid.RowDefinitions>
@@ -1131,6 +1433,1555 @@
             </Grid>
         </DataTemplate>
 
+        <DataTemplate x:Key="PlansTemplate">
+            <Grid Background="{StaticResource PanelBrush}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="56" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Background="{StaticResource WindowChromeBrush}"
+                        BorderBrush="{StaticResource BorderBrushSoft}"
+                        BorderThickness="0,0,0,1"
+                        MouseLeftButtonDown="WindowChrome_MouseLeftButtonDown">
+                    <Grid Margin="16,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="计划管理表"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextPrimaryBrush}" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding SelectedPlan.Title, TargetNullValue=未选择计划}"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                   TextTrimming="CharacterEllipsis"
+                                   MaxWidth="420" />
+                        <StackPanel Grid.Column="2"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center">
+                            <Button Content="+ 新计划"
+                                    Style="{StaticResource ToolbarButtonStyle}"
+                                    Command="{Binding AddPlanCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Command="{Binding TogglePlanEditorCommand}"
+                                    Margin="0,0,8,0">
+                                <Button.Style>
+                                    <Style TargetType="Button" BasedOn="{StaticResource ToolbarButtonStyle}">
+                                        <Setter Property="Content" Value="编辑" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsPlanEditorOpen}" Value="True">
+                                                <Setter Property="Content" Value="收起编辑" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Button.Style>
+                            </Button>
+                            <Button Content="完成"
+                                    Style="{StaticResource ToolbarButtonStyle}"
+                                    Command="{Binding CompleteSelectedPlanCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="删除"
+                                    Style="{StaticResource ToolbarButtonStyle}"
+                                    Command="{Binding DeleteSelectedPlanCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="×"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Click="CloseButton_Click" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="1">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="396" />
+                        <ColumnDefinition Width="1" />
+                        <ColumnDefinition Width="*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Grid Background="{StaticResource PanelInsetBrush}">
+                        <Grid.RowDefinitions>
+                            <RowDefinition Height="Auto" />
+                            <RowDefinition Height="32" />
+                            <RowDefinition Height="*" />
+                        </Grid.RowDefinitions>
+
+                        <StackPanel Margin="14,12,14,10">
+                            <Grid>
+                                <TextBox Text="{Binding NewPlanTitle, UpdateSourceTrigger=PropertyChanged}"
+                                         Height="34"
+                                         FontSize="14"
+                                         Padding="10,0"
+                                         VerticalContentAlignment="Center" />
+                                <TextBlock Text="输入计划标题后点右上角新建"
+                                           FontSize="14"
+                                           Foreground="{StaticResource TextMutedBrush}"
+                                           VerticalAlignment="Center"
+                                           Margin="11,0,0,0"
+                                           IsHitTestVisible="False">
+                                    <TextBlock.Style>
+                                        <Style TargetType="TextBlock">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                            <Style.Triggers>
+                                                <DataTrigger Binding="{Binding NewPlanTitle}" Value="">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                </DataTrigger>
+                                            </Style.Triggers>
+                                        </Style>
+                                    </TextBlock.Style>
+                                </TextBlock>
+                            </Grid>
+
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="108" />
+                                    <ColumnDefinition Width="108" />
+                                </Grid.ColumnDefinitions>
+                                <Grid>
+                                    <TextBox Text="{Binding PlanQuery, UpdateSourceTrigger=PropertyChanged}"
+                                             Height="34"
+                                             FontSize="14"
+                                             Padding="10,0"
+                                             VerticalContentAlignment="Center" />
+                                    <TextBlock Text="搜索计划"
+                                               FontSize="14"
+                                               Foreground="{StaticResource TextMutedBrush}"
+                                               VerticalAlignment="Center"
+                                               Margin="11,0,0,0"
+                                               IsHitTestVisible="False">
+                                        <TextBlock.Style>
+                                            <Style TargetType="TextBlock">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding PlanQuery}" Value="">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </TextBlock.Style>
+                                    </TextBlock>
+                                </Grid>
+                                <ComboBox Grid.Column="1"
+                                          Height="34"
+                                          SelectedValue="{Binding PlanStatusFilter, UpdateSourceTrigger=PropertyChanged}"
+                                          SelectedValuePath="Tag"
+                                          Margin="8,0,0,0">
+                                    <ComboBoxItem Content="全部状态" Tag="All" />
+                                    <ComboBoxItem Content="未开始" Tag="NotStarted" />
+                                    <ComboBoxItem Content="进行中" Tag="InProgress" />
+                                    <ComboBoxItem Content="已完成" Tag="Completed" />
+                                    <ComboBoxItem Content="已阻塞" Tag="Blocked" />
+                                </ComboBox>
+                                <ComboBox Grid.Column="2"
+                                          Height="34"
+                                          SelectedValue="{Binding PlanPriorityFilter, UpdateSourceTrigger=PropertyChanged}"
+                                          SelectedValuePath="Tag"
+                                          Margin="8,0,0,0">
+                                    <ComboBoxItem Content="全部优先级" Tag="All" />
+                                    <ComboBoxItem Content="高优先级" Tag="High" />
+                                    <ComboBoxItem Content="中优先级" Tag="Medium" />
+                                    <ComboBoxItem Content="低优先级" Tag="Low" />
+                                </ComboBox>
+                            </Grid>
+
+                            <Grid Margin="0,8,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+
+                                <Border Style="{StaticResource CardStyle}" Margin="0,0,4,0" Padding="10,8">
+                                    <StackPanel>
+                                        <TextBlock Text="全部"
+                                                   Style="{StaticResource ListMetaStyle}" />
+                                        <TextBlock Text="{Binding PlanTotalCount}"
+                                                   FontSize="18"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,3,0,0" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="4,0" Padding="10,8">
+                                    <StackPanel>
+                                        <TextBlock Text="待完成"
+                                                   Style="{StaticResource ListMetaStyle}" />
+                                        <TextBlock Text="{Binding PlanPendingCount}"
+                                                   FontSize="18"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,3,0,0" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="2" Style="{StaticResource CardStyle}" Margin="4,0" Padding="10,8">
+                                    <StackPanel>
+                                        <TextBlock Text="已完成"
+                                                   Style="{StaticResource ListMetaStyle}" />
+                                        <TextBlock Text="{Binding PlanCompletedCount}"
+                                                   FontSize="18"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,3,0,0" />
+                                    </StackPanel>
+                                </Border>
+                                <Border Grid.Column="3" Style="{StaticResource CardStyle}" Margin="4,0,0,0" Padding="10,8">
+                                    <StackPanel>
+                                        <TextBlock Text="已逾期"
+                                                   Style="{StaticResource ListMetaStyle}" />
+                                        <TextBlock Text="{Binding PlanOverdueCount}"
+                                                   FontSize="18"
+                                                   FontWeight="SemiBold"
+                                                   Margin="0,3,0,0" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+                        </StackPanel>
+
+                        <Grid Grid.Row="1" Margin="14,0,14,0">
+                            <Grid.ColumnDefinitions>
+                                <ColumnDefinition Width="*" />
+                                <ColumnDefinition Width="78" />
+                                <ColumnDefinition Width="74" />
+                                <ColumnDefinition Width="126" />
+                            </Grid.ColumnDefinitions>
+                            <TextBlock Text="计划"
+                                       Style="{StaticResource ListMetaStyle}"
+                                       FontWeight="SemiBold"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="1"
+                                       Text="状态"
+                                       Style="{StaticResource ListMetaStyle}"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="2"
+                                       Text="优先级"
+                                       Style="{StaticResource ListMetaStyle}"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                            <TextBlock Grid.Column="3"
+                                       Text="计划完成时间"
+                                       Style="{StaticResource ListMetaStyle}"
+                                       FontWeight="SemiBold"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center" />
+                        </Grid>
+
+                        <Grid Grid.Row="2">
+                            <ListBox ItemsSource="{Binding FilteredPlans}"
+                                     SelectedItem="{Binding SelectedPlan}"
+                                     Background="{StaticResource PanelInsetBrush}"
+                                     BorderThickness="0"
+                                     Padding="0,2,0,8">
+                                <ListBox.ItemTemplate>
+                                    <DataTemplate>
+                                        <Grid Height="58" Margin="14,0,14,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="*" />
+                                                <ColumnDefinition Width="78" />
+                                                <ColumnDefinition Width="74" />
+                                                <ColumnDefinition Width="126" />
+                                            </Grid.ColumnDefinitions>
+                                            <StackPanel VerticalAlignment="Center" Margin="0,0,10,0">
+                                                <TextBlock Text="{Binding Title}"
+                                                           FontSize="15"
+                                                           FontWeight="SemiBold"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Text="{Binding StartAtText, StringFormat=开始时间 {0}}"
+                                                           Style="{StaticResource ListMetaStyle}"
+                                                           Margin="0,2,0,0"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </StackPanel>
+                                            <TextBlock Grid.Column="1"
+                                                       Text="{Binding StatusText}"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="2"
+                                                       Text="{Binding PriorityText}"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                            <TextBlock Grid.Column="3"
+                                                       Text="{Binding TargetCompletedAtText}"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       HorizontalAlignment="Center"
+                                                       VerticalAlignment="Center" />
+                                            <Border Grid.ColumnSpan="4"
+                                                    Height="1"
+                                                    Background="#343434"
+                                                    VerticalAlignment="Bottom" />
+                                        </Grid>
+                                    </DataTemplate>
+                                </ListBox.ItemTemplate>
+                            </ListBox>
+
+                            <TextBlock Text="还没有计划项目"
+                                       Foreground="{StaticResource TextMutedBrush}"
+                                       FontSize="15"
+                                       HorizontalAlignment="Center"
+                                       VerticalAlignment="Center"
+                                       IsHitTestVisible="False">
+                                <TextBlock.Style>
+                                    <Style TargetType="TextBlock">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding FilteredPlans.Count}" Value="0">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </TextBlock.Style>
+                            </TextBlock>
+                        </Grid>
+                    </Grid>
+
+                    <Border Grid.Column="1" Background="{StaticResource BorderBrushSoft}" />
+
+                    <Grid Grid.Column="2" Background="{StaticResource PanelBrush}">
+                        <Grid Margin="22,20,22,22">
+                            <Grid.Style>
+                                <Style TargetType="Grid">
+                                    <Setter Property="Visibility" Value="Visible" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SelectedPlan}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Collapsed" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </Grid.Style>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="12" />
+                                <RowDefinition Height="*" />
+                                <RowDefinition Height="16" />
+                                <RowDefinition Height="Auto" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="{Binding SelectedPlan.Title}"
+                                               FontSize="24"
+                                               FontWeight="SemiBold"
+                                               TextTrimming="CharacterEllipsis" />
+                                    <TextBlock Text="{Binding SelectedPlan.SummaryText}"
+                                               Style="{StaticResource ListMetaStyle}"
+                                               Margin="0,4,0,0"
+                                               TextTrimming="CharacterEllipsis" />
+                                </StackPanel>
+                                <StackPanel Grid.Column="1"
+                                            Orientation="Horizontal"
+                                            VerticalAlignment="Top">
+                                    <Border Style="{StaticResource CardStyle}" Padding="10,6" Margin="0,0,8,0">
+                                        <TextBlock Text="{Binding SelectedPlan.StatusText}"
+                                                   Style="{StaticResource ListMetaStyle}" />
+                                    </Border>
+                                    <Border Style="{StaticResource CardStyle}" Padding="10,6">
+                                        <TextBlock Text="{Binding SelectedPlan.PriorityText}"
+                                                   Style="{StaticResource ListMetaStyle}" />
+                                    </Border>
+                                </StackPanel>
+                            </Grid>
+
+                            <Border Grid.Row="2"
+                                    Background="{StaticResource PanelInsetBrush}"
+                                    Padding="18">
+                                <Border.Style>
+                                    <Style TargetType="Border" BasedOn="{StaticResource CardStyle}">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsPlanEditorOpen}" Value="True">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </Border.Style>
+                                <StackPanel>
+                                    <TextBlock Text="计划详情默认关闭，点击上方“编辑”打开。"
+                                               Style="{StaticResource ListMetaStyle}"
+                                               Margin="0,0,0,12" />
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+                                        <Border Style="{StaticResource CardStyle}" Margin="0,0,6,0" Padding="12,10">
+                                            <StackPanel>
+                                                <TextBlock Text="开始时间"
+                                                           Style="{StaticResource ListMetaStyle}" />
+                                                <TextBlock Text="{Binding SelectedPlan.StartAtText}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="1" Style="{StaticResource CardStyle}" Margin="6,0" Padding="12,10">
+                                            <StackPanel>
+                                                <TextBlock Text="计划完成时间"
+                                                           Style="{StaticResource ListMetaStyle}" />
+                                                <TextBlock Text="{Binding SelectedPlan.TargetCompletedAtText}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                        <Border Grid.Column="2" Style="{StaticResource CardStyle}" Margin="6,0,0,0" Padding="12,10">
+                                            <StackPanel>
+                                                <TextBlock Text="实际完成时间"
+                                                           Style="{StaticResource ListMetaStyle}" />
+                                                <TextBlock Text="{Binding SelectedPlan.ActualCompletedAtText}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           Margin="0,4,0,0" />
+                                            </StackPanel>
+                                        </Border>
+                                    </Grid>
+
+                                    <Border Style="{StaticResource CardStyle}"
+                                            Margin="0,12,0,0"
+                                            Padding="14,12">
+                                        <StackPanel>
+                                            <TextBlock Text="计划说明"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       FontWeight="SemiBold" />
+                                            <TextBlock Text="{Binding SelectedPlan.SummaryText}"
+                                                       FontSize="14"
+                                                       TextWrapping="Wrap"
+                                                       Margin="0,6,0,0" />
+                                        </StackPanel>
+                                    </Border>
+
+                                    <StackPanel Margin="0,12,0,0">
+                                        <TextBlock Text="计划图片"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   FontWeight="SemiBold" />
+                                        <ListBox ItemsSource="{Binding SelectedPlan.Images}"
+                                                 SelectedItem="{Binding SelectedPlanImage}"
+                                                 Height="92"
+                                                 Background="Transparent"
+                                                 BorderThickness="0"
+                                                 Padding="0"
+                                                 Margin="0,8,0,0"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                                 ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                            <ListBox.Style>
+                                                <Style TargetType="ListBox">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SelectedPlan.Images.Count}" Value="0">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ListBox.Style>
+                                            <ListBox.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <StackPanel Orientation="Horizontal" />
+                                                </ItemsPanelTemplate>
+                                            </ListBox.ItemsPanel>
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Width="118"
+                                                            Height="86"
+                                                            Background="{StaticResource PanelInsetBrush}"
+                                                            BorderBrush="{StaticResource BorderBrushSoft}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="4"
+                                                            Margin="0,0,10,0">
+                                                        <Image Source="{Binding ImageBytes, Converter={StaticResource ImageBytesToSourceConverter}}"
+                                                               Stretch="Uniform"
+                                                               Margin="5" />
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+                                    </StackPanel>
+                                </StackPanel>
+                            </Border>
+
+                            <ScrollViewer Grid.Row="2"
+                                          VerticalScrollBarVisibility="Auto">
+                                <ScrollViewer.Style>
+                                    <Style TargetType="ScrollViewer">
+                                        <Setter Property="Visibility" Value="Collapsed" />
+                                        <Style.Triggers>
+                                            <DataTrigger Binding="{Binding IsPlanEditorOpen}" Value="True">
+                                                <Setter Property="Visibility" Value="Visible" />
+                                            </DataTrigger>
+                                        </Style.Triggers>
+                                    </Style>
+                                </ScrollViewer.Style>
+                                <StackPanel>
+                                    <TextBox Text="{Binding SelectedPlan.Title, UpdateSourceTrigger=PropertyChanged}"
+                                             BorderThickness="0"
+                                             Background="Transparent"
+                                             FontSize="24"
+                                             FontWeight="SemiBold"
+                                             Padding="0"
+                                             VerticalContentAlignment="Center" />
+
+                                    <Grid Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="*" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <StackPanel>
+                                            <TextBlock Text="状态"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       FontWeight="SemiBold" />
+                                            <Border Style="{StaticResource SegmentBoxStyle}" Margin="0,8,8,0">
+                                                <UniformGrid Columns="4" Margin="2">
+                                                    <RadioButton Content="未开始"
+                                                                 GroupName="PlanStatus"
+                                                                 Style="{StaticResource NavTabStyle}"
+                                                                 Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                 CommandParameter="NotStarted"
+                                                                 IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.NotStarted}}" />
+                                                    <RadioButton Content="进行中"
+                                                                 GroupName="PlanStatus"
+                                                                 Style="{StaticResource NavTabStyle}"
+                                                                 Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                 CommandParameter="InProgress"
+                                                                 IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.InProgress}}" />
+                                                    <RadioButton Content="已完成"
+                                                                 GroupName="PlanStatus"
+                                                                 Style="{StaticResource NavTabStyle}"
+                                                                 Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                 CommandParameter="Completed"
+                                                                 IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.Completed}}" />
+                                                    <RadioButton Content="已阻塞"
+                                                                 GroupName="PlanStatus"
+                                                                 Style="{StaticResource NavTabStyle}"
+                                                                 Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                 CommandParameter="Blocked"
+                                                                 IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.Blocked}}" />
+                                                </UniformGrid>
+                                            </Border>
+                                        </StackPanel>
+
+                                        <StackPanel Grid.Column="1">
+                                            <TextBlock Text="优先级"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       FontWeight="SemiBold" />
+                                            <Border Style="{StaticResource SegmentBoxStyle}" Margin="8,8,0,0">
+                                                <UniformGrid Columns="3" Margin="2">
+                                                    <RadioButton Content="高"
+                                                                 GroupName="PlanPriority"
+                                                                 Style="{StaticResource NavTabStyle}"
+                                                                 Command="{Binding SetSelectedPlanPriorityCommand}"
+                                                                 CommandParameter="High"
+                                                                 IsChecked="{Binding SelectedPlan.Priority, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanPriority.High}}" />
+                                                    <RadioButton Content="中"
+                                                                 GroupName="PlanPriority"
+                                                                 Style="{StaticResource NavTabStyle}"
+                                                                 Command="{Binding SetSelectedPlanPriorityCommand}"
+                                                                 CommandParameter="Medium"
+                                                                 IsChecked="{Binding SelectedPlan.Priority, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanPriority.Medium}}" />
+                                                    <RadioButton Content="低"
+                                                                 GroupName="PlanPriority"
+                                                                 Style="{StaticResource NavTabStyle}"
+                                                                 Command="{Binding SetSelectedPlanPriorityCommand}"
+                                                                 CommandParameter="Low"
+                                                                 IsChecked="{Binding SelectedPlan.Priority, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanPriority.Low}}" />
+                                                </UniformGrid>
+                                            </Border>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <StackPanel Margin="0,14,0,0">
+                                        <TextBlock Text="开始时间"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   FontWeight="SemiBold" />
+                                        <Border Style="{StaticResource CardStyle}"
+                                                Background="{StaticResource PanelInsetBrush}"
+                                                Margin="0,8,0,0"
+                                                Padding="12,10">
+                                            <TextBlock Text="{Binding SelectedPlan.StartAtText}"
+                                                       FontSize="14"
+                                                       FontWeight="SemiBold" />
+                                        </Border>
+                                    </StackPanel>
+
+                                    <StackPanel Margin="0,12,0,0">
+                                        <TextBlock Text="计划完成时间"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   FontWeight="SemiBold" />
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140" />
+                                                <ColumnDefinition Width="104" />
+                                                <ColumnDefinition Width="148" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <DatePicker x:Name="TargetCompletedDatePicker"
+                                                        SelectedDate="{Binding SelectedPlanTargetCompletedDate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                        Style="{StaticResource PlanDatePickerStyle}"
+                                                        SelectedDateFormat="Short"
+                                                        VerticalContentAlignment="Center" />
+                                            <ComboBox Grid.Column="1"
+                                                      Style="{StaticResource PlanTimeComboBoxStyle}"
+                                                      ItemsSource="{Binding PlanTimeOptions}"
+                                                      Text="{Binding SelectedPlanTargetCompletedTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                                      IsEditable="True"
+                                                      IsTextSearchEnabled="False"
+                                                      Margin="8,0,0,0"
+                                                      VerticalContentAlignment="Center" />
+                                            <Border Grid.Column="2"
+                                                    Style="{StaticResource CardStyle}"
+                                                    Background="{StaticResource PanelInsetBrush}"
+                                                    Margin="8,0,0,0"
+                                                    Padding="10,0"
+                                                    Width="148">
+                                                <TextBlock Text="{Binding SelectedPlan.TargetCompletedAtText}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </Border>
+                                            <Button Grid.Column="3"
+                                                    Content="清空"
+                                                    Style="{StaticResource ToolbarButtonStyle}"
+                                                    Command="{Binding ClearSelectedPlanTargetCompletedAtCommand}"
+                                                    Margin="8,0,0,0" />
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <StackPanel Margin="0,12,0,0">
+                                        <TextBlock Text="实际完成时间"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   FontWeight="SemiBold" />
+                                        <Grid Margin="0,8,0,0">
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="140" />
+                                                <ColumnDefinition Width="104" />
+                                                <ColumnDefinition Width="148" />
+                                                <ColumnDefinition Width="Auto" />
+                                            </Grid.ColumnDefinitions>
+                                            <DatePicker x:Name="ActualCompletedDatePicker"
+                                                        SelectedDate="{Binding SelectedPlanActualCompletedDate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                        Style="{StaticResource PlanDatePickerStyle}"
+                                                        SelectedDateFormat="Short"
+                                                        VerticalContentAlignment="Center" />
+                                            <ComboBox Grid.Column="1"
+                                                      Style="{StaticResource PlanTimeComboBoxStyle}"
+                                                      ItemsSource="{Binding PlanTimeOptions}"
+                                                      Text="{Binding SelectedPlanActualCompletedTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                                      IsEditable="True"
+                                                      IsTextSearchEnabled="False"
+                                                      Margin="8,0,0,0"
+                                                      VerticalContentAlignment="Center" />
+                                            <Border Grid.Column="2"
+                                                    Style="{StaticResource CardStyle}"
+                                                    Background="{StaticResource PanelInsetBrush}"
+                                                    Margin="8,0,0,0"
+                                                    Padding="10,0"
+                                                    Width="148">
+                                                <TextBlock Text="{Binding SelectedPlan.ActualCompletedAtText}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold"
+                                                           VerticalAlignment="Center"
+                                                           TextTrimming="CharacterEllipsis" />
+                                            </Border>
+                                            <StackPanel Grid.Column="3"
+                                                        Orientation="Horizontal"
+                                                        Margin="8,0,0,0">
+                                                <Button Content="标记完成"
+                                                        Style="{StaticResource ToolbarButtonStyle}"
+                                                        Command="{Binding CompleteSelectedPlanCommand}"
+                                                        Margin="0,0,6,0" />
+                                                <Button Content="清空"
+                                                        Style="{StaticResource ToolbarButtonStyle}"
+                                                        Command="{Binding ClearSelectedPlanActualCompletedAtCommand}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </StackPanel>
+
+                                    <StackPanel Margin="0,14,0,0">
+                                        <TextBlock Text="计划说明"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   FontWeight="SemiBold" />
+                                        <TextBox Text="{Binding SelectedPlan.Description, UpdateSourceTrigger=PropertyChanged}"
+                                                 AcceptsReturn="True"
+                                                 TextWrapping="Wrap"
+                                                 VerticalScrollBarVisibility="Auto"
+                                                 MinHeight="140"
+                                                 Margin="0,8,0,0"
+                                                 VerticalContentAlignment="Top" />
+                                    </StackPanel>
+
+                                    <Grid Margin="0,14,0,0">
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+
+                                        <ListBox ItemsSource="{Binding SelectedPlan.Images}"
+                                                 SelectedItem="{Binding SelectedPlanImage}"
+                                                 Height="92"
+                                                 Background="Transparent"
+                                                 BorderThickness="0"
+                                                 Padding="0"
+                                                 ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                                 ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                            <ListBox.Style>
+                                                <Style TargetType="ListBox">
+                                                    <Setter Property="Visibility" Value="Visible" />
+                                                    <Style.Triggers>
+                                                        <DataTrigger Binding="{Binding SelectedPlan.Images.Count}" Value="0">
+                                                            <Setter Property="Visibility" Value="Collapsed" />
+                                                        </DataTrigger>
+                                                    </Style.Triggers>
+                                                </Style>
+                                            </ListBox.Style>
+                                            <ListBox.ItemsPanel>
+                                                <ItemsPanelTemplate>
+                                                    <StackPanel Orientation="Horizontal" />
+                                                </ItemsPanelTemplate>
+                                            </ListBox.ItemsPanel>
+                                            <ListBox.ItemTemplate>
+                                                <DataTemplate>
+                                                    <Border Width="118"
+                                                            Height="86"
+                                                            Background="{StaticResource PanelInsetBrush}"
+                                                            BorderBrush="{StaticResource BorderBrushSoft}"
+                                                            BorderThickness="1"
+                                                            CornerRadius="4"
+                                                            Margin="0,0,10,0">
+                                                        <Image Source="{Binding ImageBytes, Converter={StaticResource ImageBytesToSourceConverter}}"
+                                                               Stretch="Uniform"
+                                                               Margin="5" />
+                                                    </Border>
+                                                </DataTemplate>
+                                            </ListBox.ItemTemplate>
+                                        </ListBox>
+
+                                        <Button Grid.Column="1"
+                                                Content="粘贴图片"
+                                                Style="{StaticResource ToolbarButtonStyle}"
+                                                Command="{Binding AddPlanImageFromClipboardCommand}"
+                                                Margin="12,0,8,0"
+                                                VerticalAlignment="Top" />
+                                        <Button Grid.Column="2"
+                                                Content="添加图片"
+                                                Style="{StaticResource ToolbarButtonStyle}"
+                                                Command="{Binding AddPlanImageFromFileCommand}"
+                                                Margin="0,0,8,0"
+                                                VerticalAlignment="Top" />
+                                        <Button Grid.Column="3"
+                                                Content="删除图片"
+                                                Style="{StaticResource ToolbarButtonStyle}"
+                                                Command="{Binding DeleteSelectedPlanImageCommand}"
+                                                VerticalAlignment="Top" />
+                                    </Grid>
+                                </StackPanel>
+                            </ScrollViewer>
+
+                            <TextBlock Grid.Row="4"
+                                       Text="{Binding SelectedPlan.UpdatedAt, StringFormat=最后更新：{0:yyyy-MM-dd HH:mm}}"
+                                       Style="{StaticResource ListMetaStyle}"
+                                       VerticalAlignment="Bottom" />
+                        </Grid>
+
+                        <StackPanel HorizontalAlignment="Center"
+                                    VerticalAlignment="Center">
+                            <StackPanel.Style>
+                                <Style TargetType="StackPanel">
+                                    <Setter Property="Visibility" Value="Collapsed" />
+                                    <Style.Triggers>
+                                        <DataTrigger Binding="{Binding SelectedPlan}" Value="{x:Null}">
+                                            <Setter Property="Visibility" Value="Visible" />
+                                        </DataTrigger>
+                                    </Style.Triggers>
+                                </Style>
+                            </StackPanel.Style>
+                            <TextBlock Text="还没有选中计划"
+                                       FontSize="19"
+                                       FontWeight="SemiBold"
+                                       Foreground="{StaticResource TextSecondaryBrush}"
+                                       HorizontalAlignment="Center" />
+                            <TextBlock Text="从左侧列表选择一项，或者新建一个计划开始管理。"
+                                       Style="{StaticResource ListMetaStyle}"
+                                       FontSize="14"
+                                       Margin="0,8,0,0"
+                                       HorizontalAlignment="Center" />
+                        </StackPanel>
+                    </Grid>
+                </Grid>
+            </Grid>
+        </DataTemplate>
+
+        <DataTemplate x:Key="PlansCalendarTemplate">
+            <Grid Background="{StaticResource PanelBrush}">
+                <Grid.RowDefinitions>
+                    <RowDefinition Height="56" />
+                    <RowDefinition Height="*" />
+                </Grid.RowDefinitions>
+
+                <Border Background="{StaticResource WindowChromeBrush}"
+                        BorderBrush="{StaticResource BorderBrushSoft}"
+                        BorderThickness="0,0,0,1"
+                        MouseLeftButtonDown="WindowChrome_MouseLeftButtonDown">
+                    <Grid Margin="16,0">
+                        <Grid.ColumnDefinitions>
+                            <ColumnDefinition Width="Auto" />
+                            <ColumnDefinition Width="*" />
+                            <ColumnDefinition Width="Auto" />
+                        </Grid.ColumnDefinitions>
+                        <TextBlock Text="日程表"
+                                   FontSize="18"
+                                   FontWeight="SemiBold"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextPrimaryBrush}" />
+                        <TextBlock Grid.Column="1"
+                                   Text="{Binding PlanCalendarMonthTitle}"
+                                   FontSize="14"
+                                   FontWeight="SemiBold"
+                                   HorizontalAlignment="Center"
+                                   VerticalAlignment="Center"
+                                   Foreground="{StaticResource TextSecondaryBrush}" />
+                        <StackPanel Grid.Column="2"
+                                    Orientation="Horizontal"
+                                    HorizontalAlignment="Right"
+                                    VerticalAlignment="Center">
+                            <Button Content="+ 新计划"
+                                    Style="{StaticResource ToolbarButtonStyle}"
+                                    Command="{Binding AddPlanCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="上个月"
+                                    Style="{StaticResource ToolbarButtonStyle}"
+                                    Command="{Binding ShowPreviousPlanMonthCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="今天"
+                                    Style="{StaticResource ToolbarButtonStyle}"
+                                    Command="{Binding ShowCurrentPlanMonthCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="下个月"
+                                    Style="{StaticResource ToolbarButtonStyle}"
+                                    Command="{Binding ShowNextPlanMonthCommand}"
+                                    Margin="0,0,8,0" />
+                            <Button Content="×"
+                                    Style="{StaticResource IconButtonStyle}"
+                                    Click="CloseButton_Click" />
+                        </StackPanel>
+                    </Grid>
+                </Border>
+
+                <Grid Grid.Row="1"
+                      Margin="14">
+                    <Grid.ColumnDefinitions>
+                        <ColumnDefinition Width="1.18*" />
+                        <ColumnDefinition Width="14" />
+                        <ColumnDefinition Width="0.92*" />
+                    </Grid.ColumnDefinitions>
+
+                    <Border Background="#16212C"
+                            BorderBrush="#243244"
+                            BorderThickness="1"
+                            CornerRadius="18"
+                            Padding="18">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="SCHEDULE CALENDAR"
+                                               Foreground="#D2A06D"
+                                               FontSize="13"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding PlanCalendarMonthTitle}"
+                                               FontSize="28"
+                                               FontWeight="Bold"
+                                               Margin="0,8,0,0" />
+                                    <TextBlock Text="在月历上查看每一天的安排，点击右侧继续编辑。"
+                                               Style="{StaticResource ListMetaStyle}"
+                                               Foreground="#8FA0B5"
+                                               Margin="0,6,0,0" />
+                                </StackPanel>
+                                <Border Grid.Column="1"
+                                        Background="#1A2A3A"
+                                        BorderBrush="#243244"
+                                        BorderThickness="1"
+                                        CornerRadius="14"
+                                        Padding="12,8"
+                                        Margin="16,0,0,0"
+                                        VerticalAlignment="Top">
+                                    <StackPanel>
+                                        <TextBlock Text="总计划"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   Foreground="#8FA0B5"
+                                                   HorizontalAlignment="Right" />
+                                        <TextBlock Text="{Binding PlanTotalCount}"
+                                                   FontSize="22"
+                                                   FontWeight="Bold"
+                                                   HorizontalAlignment="Right" />
+                                    </StackPanel>
+                                </Border>
+                            </Grid>
+
+                            <Grid Grid.Row="1"
+                                  Margin="0,18,0,0">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="1.25*" />
+                                    <ColumnDefinition Width="132" />
+                                    <ColumnDefinition Width="132" />
+                                    <ColumnDefinition Width="0.95*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBox Text="{Binding PlanQuery, UpdateSourceTrigger=PropertyChanged}"
+                                         Height="36"
+                                         FontSize="14"
+                                         Padding="12,0"
+                                         Background="#182635"
+                                         BorderBrush="#243244"
+                                         BorderThickness="1"
+                                         VerticalContentAlignment="Center" />
+                                <ComboBox Grid.Column="1"
+                                          Height="36"
+                                          SelectedValue="{Binding PlanStatusFilter, UpdateSourceTrigger=PropertyChanged}"
+                                          SelectedValuePath="Tag"
+                                          Margin="10,0,0,0">
+                                    <ComboBoxItem Content="全部状态" Tag="All" />
+                                    <ComboBoxItem Content="未开始" Tag="NotStarted" />
+                                    <ComboBoxItem Content="进行中" Tag="InProgress" />
+                                    <ComboBoxItem Content="已完成" Tag="Completed" />
+                                    <ComboBoxItem Content="已阻塞" Tag="Blocked" />
+                                </ComboBox>
+                                <ComboBox Grid.Column="2"
+                                          Height="36"
+                                          SelectedValue="{Binding PlanPriorityFilter, UpdateSourceTrigger=PropertyChanged}"
+                                          SelectedValuePath="Tag"
+                                          Margin="10,0,0,0">
+                                    <ComboBoxItem Content="全部优先级" Tag="All" />
+                                    <ComboBoxItem Content="高优先级" Tag="High" />
+                                    <ComboBoxItem Content="中优先级" Tag="Medium" />
+                                    <ComboBoxItem Content="低优先级" Tag="Low" />
+                                </ComboBox>
+                                <TextBox Grid.Column="3"
+                                         Text="{Binding NewPlanTitle, UpdateSourceTrigger=PropertyChanged}"
+                                         Height="36"
+                                         FontSize="14"
+                                         Padding="12,0"
+                                         Margin="10,0,0,0"
+                                         Background="#182635"
+                                         BorderBrush="#243244"
+                                         BorderThickness="1"
+                                         VerticalContentAlignment="Center" />
+                            </Grid>
+
+                            <Grid Grid.Row="2"
+                                  Margin="0,18,0,12">
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="*" />
+                                </Grid.ColumnDefinitions>
+                                <TextBlock Text="一" HorizontalAlignment="Center" Foreground="#8490A0" />
+                                <TextBlock Grid.Column="1" Text="二" HorizontalAlignment="Center" Foreground="#8490A0" />
+                                <TextBlock Grid.Column="2" Text="三" HorizontalAlignment="Center" Foreground="#8490A0" />
+                                <TextBlock Grid.Column="3" Text="四" HorizontalAlignment="Center" Foreground="#8490A0" />
+                                <TextBlock Grid.Column="4" Text="五" HorizontalAlignment="Center" Foreground="#8490A0" />
+                                <TextBlock Grid.Column="5" Text="六" HorizontalAlignment="Center" Foreground="#8490A0" />
+                                <TextBlock Grid.Column="6" Text="日" HorizontalAlignment="Center" Foreground="#8490A0" />
+                            </Grid>
+
+                            <ItemsControl Grid.Row="3"
+                                          ItemsSource="{Binding PlanCalendarDays}">
+                                <ItemsControl.ItemsPanel>
+                                    <ItemsPanelTemplate>
+                                        <UniformGrid Columns="7" />
+                                    </ItemsPanelTemplate>
+                                </ItemsControl.ItemsPanel>
+                                <ItemsControl.ItemTemplate>
+                                    <DataTemplate>
+                                        <Button Command="{Binding DataContext.SelectPlanCalendarDayCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                CommandParameter="{Binding}"
+                                                Margin="4"
+                                                Padding="0"
+                                                Background="Transparent"
+                                                BorderThickness="0">
+                                            <Border MinHeight="96"
+                                                    Padding="10">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#18293A" />
+                                                        <Setter Property="BorderBrush" Value="#243244" />
+                                                        <Setter Property="BorderThickness" Value="1" />
+                                                        <Setter Property="CornerRadius" Value="14" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                <Setter Property="Background" Value="#2A2F3A" />
+                                                                <Setter Property="BorderBrush" Value="#C88752" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding IsToday}" Value="True">
+                                                                <Setter Property="BorderBrush" Value="#C88752" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                                <Grid>
+                                                    <Grid.RowDefinitions>
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="Auto" />
+                                                        <RowDefinition Height="*" />
+                                                    </Grid.RowDefinitions>
+                                                    <Grid>
+                                                        <Grid.ColumnDefinitions>
+                                                            <ColumnDefinition Width="*" />
+                                                            <ColumnDefinition Width="Auto" />
+                                                        </Grid.ColumnDefinitions>
+                                                        <TextBlock Text="{Binding DayText}"
+                                                                   FontSize="15"
+                                                                   FontWeight="Bold">
+                                                            <TextBlock.Style>
+                                                                <Style TargetType="TextBlock">
+                                                                    <Setter Property="Foreground" Value="{StaticResource TextPrimaryBrush}" />
+                                                                    <Style.Triggers>
+                                                                        <DataTrigger Binding="{Binding IsCurrentMonth}" Value="False">
+                                                                            <Setter Property="Foreground" Value="#697486" />
+                                                                        </DataTrigger>
+                                                                    </Style.Triggers>
+                                                                </Style>
+                                                            </TextBlock.Style>
+                                                        </TextBlock>
+                                                        <Ellipse Grid.Column="1"
+                                                                 Width="7"
+                                                                 Height="7"
+                                                                 Fill="#D89253"
+                                                                 Margin="6,4,0,0"
+                                                                 Visibility="{Binding HasPlans, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                    </Grid>
+                                                    <TextBlock Grid.Row="1"
+                                                               Text="{Binding PrimaryPlanSubtitle}"
+                                                               FontSize="11"
+                                                               Foreground="#90A0B3"
+                                                               Margin="0,8,0,0"
+                                                               Visibility="{Binding HasPrimaryPlanSubtitle, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                    <StackPanel Grid.Row="2"
+                                                                Margin="0,8,0,0">
+                                                        <TextBlock Text="{Binding PrimaryPlan.Title}"
+                                                                   Foreground="#F3EEE6"
+                                                                   FontWeight="SemiBold"
+                                                                   TextWrapping="Wrap"
+                                                                   MaxHeight="34"
+                                                                   TextTrimming="CharacterEllipsis"
+                                                                   Visibility="{Binding HasPlans, Converter={StaticResource BooleanToVisibilityConverter}}" />
+                                                        <Border Background="#203345"
+                                                                CornerRadius="10"
+                                                                Padding="6,2"
+                                                                Margin="0,8,0,0"
+                                                                HorizontalAlignment="Left"
+                                                                Visibility="{Binding HasOverflowPlans, Converter={StaticResource BooleanToVisibilityConverter}}">
+                                                            <TextBlock Text="{Binding OverflowText}"
+                                                                       FontSize="11"
+                                                                       Foreground="#8C95A2" />
+                                                        </Border>
+                                                    </StackPanel>
+                                                </Grid>
+                                            </Border>
+                                        </Button>
+                                    </DataTemplate>
+                                </ItemsControl.ItemTemplate>
+                            </ItemsControl>
+                        </Grid>
+                    </Border>
+
+                    <Border Grid.Column="2"
+                            MinWidth="470"
+                            Background="#16212C"
+                            BorderBrush="#243244"
+                            BorderThickness="1"
+                            CornerRadius="18"
+                            Padding="18">
+                        <Grid>
+                            <Grid.RowDefinitions>
+                                <RowDefinition Height="Auto" />
+                                <RowDefinition Height="238" />
+                                <RowDefinition Height="*" />
+                            </Grid.RowDefinitions>
+
+                            <Grid>
+                                <Grid.ColumnDefinitions>
+                                    <ColumnDefinition Width="*" />
+                                    <ColumnDefinition Width="Auto" />
+                                </Grid.ColumnDefinitions>
+                                <StackPanel>
+                                    <TextBlock Text="DAY DETAIL"
+                                               Foreground="#D2A06D"
+                                               FontSize="13"
+                                               FontWeight="SemiBold" />
+                                    <TextBlock Text="{Binding SelectedPlanDateTitle}"
+                                               FontSize="28"
+                                               FontWeight="Bold"
+                                               Margin="0,8,0,0" />
+                                </StackPanel>
+                                <Border Grid.Column="1"
+                                        Background="#1B2A3A"
+                                        BorderBrush="#243244"
+                                        BorderThickness="1"
+                                        CornerRadius="16"
+                                        Padding="12,7"
+                                        VerticalAlignment="Top">
+                                    <TextBlock Text="{Binding SelectedPlanDateCount, StringFormat={}{0}条安排}"
+                                               FontWeight="SemiBold" />
+                                </Border>
+                            </Grid>
+
+                            <ScrollViewer Grid.Row="1"
+                                          Margin="0,14,0,0"
+                                          VerticalScrollBarVisibility="Auto">
+                                <Grid>
+                                    <ItemsControl ItemsSource="{Binding SelectedPlanDayDetails}">
+                                        <ItemsControl.ItemTemplate>
+                                            <DataTemplate>
+                                                <Button Command="{Binding DataContext.SelectPlanDayDetailCommand, RelativeSource={RelativeSource AncestorType=Window}}"
+                                                        CommandParameter="{Binding}"
+                                                        Margin="0,0,0,12"
+                                                        Padding="0"
+                                                        Background="Transparent"
+                                                        BorderThickness="0">
+                                                    <Border Padding="14">
+                                                        <Border.Style>
+                                                            <Style TargetType="Border">
+                                                                <Setter Property="Background" Value="#192837" />
+                                                                <Setter Property="BorderBrush" Value="#243244" />
+                                                                <Setter Property="BorderThickness" Value="1" />
+                                                                <Setter Property="CornerRadius" Value="14" />
+                                                                <Style.Triggers>
+                                                                    <DataTrigger Binding="{Binding IsSelected}" Value="True">
+                                                                        <Setter Property="Background" Value="#2A2F3A" />
+                                                                        <Setter Property="BorderBrush" Value="#C88752" />
+                                                                    </DataTrigger>
+                                                                </Style.Triggers>
+                                                            </Style>
+                                                        </Border.Style>
+                                                        <StackPanel>
+                                                            <Grid>
+                                                                <Grid.ColumnDefinitions>
+                                                                    <ColumnDefinition Width="*" />
+                                                                    <ColumnDefinition Width="Auto" />
+                                                                </Grid.ColumnDefinitions>
+                                                                <TextBlock Text="{Binding Plan.Title}"
+                                                                           FontSize="17"
+                                                                           FontWeight="Bold" />
+                                                                <Border Grid.Column="1"
+                                                                        Background="#203345"
+                                                                        CornerRadius="12"
+                                                                        Padding="10,4">
+                                                                    <TextBlock Text="{Binding TagText}"
+                                                                               Foreground="#E5EDF5" />
+                                                                </Border>
+                                                            </Grid>
+                                                            <WrapPanel Margin="0,12,0,0">
+                                                                <Border Background="#243244" CornerRadius="12" Padding="10,4" Margin="0,0,8,8">
+                                                                    <TextBlock Text="{Binding StatusText}"
+                                                                               Foreground="#E5EDF5" />
+                                                                </Border>
+                                                                <Border Background="#243244" CornerRadius="12" Padding="10,4" Margin="0,0,8,8">
+                                                                    <TextBlock Text="{Binding PriorityText}"
+                                                                               Foreground="#E5EDF5" />
+                                                                </Border>
+                                                                <Border Background="#243244" CornerRadius="12" Padding="10,4" Margin="0,0,8,8">
+                                                                    <TextBlock Text="{Binding TimeText}"
+                                                                               Foreground="#E5EDF5" />
+                                                                </Border>
+                                                                <Border Background="#243244" CornerRadius="12" Padding="10,4" Margin="0,0,8,8">
+                                                                    <TextBlock Text="{Binding DateText}"
+                                                                               Foreground="#E5EDF5" />
+                                                                </Border>
+                                                                <Border Background="#243244" CornerRadius="12" Padding="10,4" Margin="0,0,8,8">
+                                                                    <TextBlock Text="{Binding DurationText}"
+                                                                               Foreground="#E5EDF5" />
+                                                                </Border>
+                                                            </WrapPanel>
+                                                            <TextBlock Text="{Binding SummaryText}"
+                                                                       Style="{StaticResource ListMetaStyle}"
+                                                                       Foreground="#B7C4D4"
+                                                                       TextWrapping="Wrap"
+                                                                       Margin="0,6,0,0" />
+                                                        </StackPanel>
+                                                    </Border>
+                                                </Button>
+                                            </DataTemplate>
+                                        </ItemsControl.ItemTemplate>
+                                    </ItemsControl>
+
+                                    <StackPanel HorizontalAlignment="Center"
+                                                VerticalAlignment="Center">
+                                        <StackPanel.Style>
+                                            <Style TargetType="StackPanel">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding SelectedPlanDateCount}" Value="0">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </StackPanel.Style>
+                                        <TextBlock Text="这一天还没有安排"
+                                                   FontSize="18"
+                                                   FontWeight="SemiBold"
+                                                   Foreground="{StaticResource TextSecondaryBrush}"
+                                                   HorizontalAlignment="Center" />
+                                        <TextBlock Text="可以新建一个计划，或者切换到其他日期查看。"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   FontSize="14"
+                                                   Margin="0,8,0,0"
+                                                   HorizontalAlignment="Center" />
+                                    </StackPanel>
+                                </Grid>
+                            </ScrollViewer>
+
+                            <Border Grid.Row="2"
+                                    Background="#14202B"
+                                    BorderBrush="#243244"
+                                    BorderThickness="1"
+                                    CornerRadius="16"
+                                    Padding="16"
+                                    Margin="0,12,0,0">
+                                <Grid>
+                                    <Grid.RowDefinitions>
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="Auto" />
+                                        <RowDefinition Height="*" />
+                                    </Grid.RowDefinitions>
+
+                                    <Grid>
+                                        <Grid.ColumnDefinitions>
+                                            <ColumnDefinition Width="*" />
+                                            <ColumnDefinition Width="Auto" />
+                                        </Grid.ColumnDefinitions>
+                                        <TextBlock Text="{Binding SelectedPlan.Title, TargetNullValue=未选择计划}"
+                                                   FontSize="22"
+                                                   FontWeight="Bold"
+                                                   VerticalAlignment="Center" />
+                                        <StackPanel Grid.Column="1"
+                                                    Orientation="Horizontal"
+                                                    HorizontalAlignment="Right">
+                                            <Button Content="完成"
+                                                    Style="{StaticResource ToolbarButtonStyle}"
+                                                    Command="{Binding CompleteSelectedPlanCommand}"
+                                                    Margin="0,0,8,0" />
+                                            <ToggleButton IsChecked="{Binding IsPlanEditorOpen, Mode=TwoWay}">
+                                                <ToggleButton.Style>
+                                                    <Style TargetType="ToggleButton"
+                                                           BasedOn="{StaticResource ToolbarToggleButtonStyle}">
+                                                        <Setter Property="MinWidth" Value="92" />
+                                                        <Setter Property="Content" Value="编辑" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding IsPlanEditorOpen}" Value="True">
+                                                                <Setter Property="Content" Value="收起编辑" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding SelectedPlan}" Value="{x:Null}">
+                                                                <Setter Property="IsEnabled" Value="False" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </ToggleButton.Style>
+                                            </ToggleButton>
+                                        </StackPanel>
+                                    </Grid>
+
+                                    <Border Grid.Row="1"
+                                            Background="#182635"
+                                            BorderBrush="#243244"
+                                            BorderThickness="1"
+                                            CornerRadius="12"
+                                            Padding="12"
+                                            Margin="0,12,0,0">
+                                        <TextBlock Text="{Binding SelectedPlan.SummaryText, TargetNullValue=先从上面的日程卡片里选中一个计划，再点编辑。}"
+                                                   Style="{StaticResource ListMetaStyle}"
+                                                   Foreground="#D3D8DE"
+                                                   TextWrapping="Wrap" />
+                                    </Border>
+
+                                    <ScrollViewer Grid.Row="2"
+                                                  Margin="0,12,0,0"
+                                          VerticalScrollBarVisibility="Auto">
+                                        <ScrollViewer.Style>
+                                            <Style TargetType="ScrollViewer">
+                                                <Setter Property="Visibility" Value="Collapsed" />
+                                                <Style.Triggers>
+                                                    <DataTrigger Binding="{Binding IsPlanEditorOpen}" Value="True">
+                                                        <Setter Property="Visibility" Value="Visible" />
+                                                    </DataTrigger>
+                                                </Style.Triggers>
+                                            </Style>
+                                        </ScrollViewer.Style>
+                                        <StackPanel>
+                                            <TextBlock Text="编辑详情"
+                                                       Foreground="#D2A06D"
+                                                       FontSize="13"
+                                                       FontWeight="SemiBold" />
+                                            <Grid>
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+
+                                                <StackPanel>
+                                                    <TextBlock Text="状态"
+                                                               Style="{StaticResource ListMetaStyle}"
+                                                               FontWeight="SemiBold" />
+                                                    <Border Style="{StaticResource SegmentBoxStyle}"
+                                                            Margin="0,8,8,0">
+                                                        <UniformGrid Columns="4"
+                                                                     Margin="2">
+                                                            <RadioButton Content="未开始"
+                                                                         GroupName="PlanStatusCalendar"
+                                                                         Style="{StaticResource NavTabStyle}"
+                                                                         Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                         CommandParameter="NotStarted"
+                                                                         IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.NotStarted}}" />
+                                                            <RadioButton Content="进行中"
+                                                                         GroupName="PlanStatusCalendar"
+                                                                         Style="{StaticResource NavTabStyle}"
+                                                                         Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                         CommandParameter="InProgress"
+                                                                         IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.InProgress}}" />
+                                                            <RadioButton Content="已完成"
+                                                                         GroupName="PlanStatusCalendar"
+                                                                         Style="{StaticResource NavTabStyle}"
+                                                                         Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                         CommandParameter="Completed"
+                                                                         IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.Completed}}" />
+                                                            <RadioButton Content="已阻塞"
+                                                                         GroupName="PlanStatusCalendar"
+                                                                         Style="{StaticResource NavTabStyle}"
+                                                                         Command="{Binding SetSelectedPlanStatusCommand}"
+                                                                         CommandParameter="Blocked"
+                                                                         IsChecked="{Binding SelectedPlan.Status, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanItemStatus.Blocked}}" />
+                                                        </UniformGrid>
+                                                    </Border>
+                                                </StackPanel>
+
+                                                <StackPanel Grid.Column="1">
+                                                    <TextBlock Text="优先级"
+                                                               Style="{StaticResource ListMetaStyle}"
+                                                               FontWeight="SemiBold" />
+                                                    <Border Style="{StaticResource SegmentBoxStyle}"
+                                                            Margin="8,8,0,0">
+                                                        <UniformGrid Columns="3"
+                                                                     Margin="2">
+                                                            <RadioButton Content="高"
+                                                                         GroupName="PlanPriorityCalendar"
+                                                                         Style="{StaticResource NavTabStyle}"
+                                                                         Command="{Binding SetSelectedPlanPriorityCommand}"
+                                                                         CommandParameter="High"
+                                                                         IsChecked="{Binding SelectedPlan.Priority, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanPriority.High}}" />
+                                                            <RadioButton Content="中"
+                                                                         GroupName="PlanPriorityCalendar"
+                                                                         Style="{StaticResource NavTabStyle}"
+                                                                         Command="{Binding SetSelectedPlanPriorityCommand}"
+                                                                         CommandParameter="Medium"
+                                                                         IsChecked="{Binding SelectedPlan.Priority, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanPriority.Medium}}" />
+                                                            <RadioButton Content="低"
+                                                                         GroupName="PlanPriorityCalendar"
+                                                                         Style="{StaticResource NavTabStyle}"
+                                                                         Command="{Binding SetSelectedPlanPriorityCommand}"
+                                                                         CommandParameter="Low"
+                                                                         IsChecked="{Binding SelectedPlan.Priority, Converter={StaticResource EnumEqualsConverter}, ConverterParameter={x:Static models:PlanPriority.Low}}" />
+                                                        </UniformGrid>
+                                                    </Border>
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <TextBlock Text="开始时间"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       FontWeight="SemiBold"
+                                                       Margin="0,12,0,0" />
+                                            <Border Style="{StaticResource CardStyle}"
+                                                    Background="{StaticResource PanelInsetBrush}"
+                                                    Margin="0,8,0,0"
+                                                    Padding="12,10">
+                                                <TextBlock Text="{Binding SelectedPlan.StartAtText}"
+                                                           FontSize="14"
+                                                           FontWeight="SemiBold" />
+                                            </Border>
+
+                                            <TextBlock Text="计划完成时间"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       FontWeight="SemiBold"
+                                                       Margin="0,12,0,0" />
+                                            <Grid Margin="0,8,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="124" />
+                                                    <ColumnDefinition Width="104" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <DatePicker x:Name="TargetCompletedDatePicker"
+                                                            SelectedDate="{Binding SelectedPlanTargetCompletedDate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                            Style="{StaticResource PlanDatePickerStyle}"
+                                                            SelectedDateFormat="Short"
+                                                            VerticalContentAlignment="Center" />
+                                                <ComboBox Grid.Column="1"
+                                                          Style="{StaticResource PlanTimeComboBoxStyle}"
+                                                          ItemsSource="{Binding PlanTimeOptions}"
+                                                          Text="{Binding SelectedPlanTargetCompletedTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                                          IsEditable="True"
+                                                          IsTextSearchEnabled="False"
+                                                          Margin="8,0,0,0"
+                                                          VerticalContentAlignment="Center" />
+                                                <Button Grid.Column="2"
+                                                        Content="清空"
+                                                        Style="{StaticResource ToolbarButtonStyle}"
+                                                        Command="{Binding ClearSelectedPlanTargetCompletedAtCommand}"
+                                                        Margin="8,0,0,0"
+                                                        HorizontalAlignment="Left" />
+                                            </Grid>
+
+                                            <TextBlock Text="实际完成时间"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       FontWeight="SemiBold"
+                                                       Margin="0,12,0,0" />
+                                            <Grid Margin="0,8,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="124" />
+                                                    <ColumnDefinition Width="104" />
+                                                    <ColumnDefinition Width="*" />
+                                                </Grid.ColumnDefinitions>
+                                                <DatePicker x:Name="ActualCompletedDatePicker"
+                                                            SelectedDate="{Binding SelectedPlanActualCompletedDate, Mode=TwoWay, UpdateSourceTrigger=PropertyChanged}"
+                                                            Style="{StaticResource PlanDatePickerStyle}"
+                                                            SelectedDateFormat="Short"
+                                                            VerticalContentAlignment="Center" />
+                                                <ComboBox Grid.Column="1"
+                                                          Style="{StaticResource PlanTimeComboBoxStyle}"
+                                                          ItemsSource="{Binding PlanTimeOptions}"
+                                                          Text="{Binding SelectedPlanActualCompletedTimeText, UpdateSourceTrigger=PropertyChanged}"
+                                                          IsEditable="True"
+                                                          IsTextSearchEnabled="False"
+                                                          Margin="8,0,0,0"
+                                                          VerticalContentAlignment="Center" />
+                                                <StackPanel Grid.Column="2"
+                                                            Orientation="Horizontal"
+                                                            Margin="8,0,0,0">
+                                                    <Button Content="标记完成"
+                                                            Style="{StaticResource ToolbarButtonStyle}"
+                                                            Command="{Binding CompleteSelectedPlanCommand}"
+                                                            Margin="0,0,6,0" />
+                                                    <Button Content="清空"
+                                                            Style="{StaticResource ToolbarButtonStyle}"
+                                                            Command="{Binding ClearSelectedPlanActualCompletedAtCommand}" />
+                                                </StackPanel>
+                                            </Grid>
+
+                                            <TextBlock Text="计划说明"
+                                                       Style="{StaticResource ListMetaStyle}"
+                                                       FontWeight="SemiBold"
+                                                       Margin="0,12,0,0" />
+                                            <TextBox Text="{Binding SelectedPlan.Description, UpdateSourceTrigger=PropertyChanged}"
+                                                     AcceptsReturn="True"
+                                                     TextWrapping="Wrap"
+                                                     VerticalScrollBarVisibility="Auto"
+                                                     MinHeight="128"
+                                                     Margin="0,8,0,0"
+                                                     Background="#182635"
+                                                     BorderBrush="#243244"
+                                                     BorderThickness="1"
+                                                     VerticalContentAlignment="Top" />
+
+                                            <Grid Margin="0,12,0,0">
+                                                <Grid.ColumnDefinitions>
+                                                    <ColumnDefinition Width="*" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                    <ColumnDefinition Width="Auto" />
+                                                </Grid.ColumnDefinitions>
+                                                <ListBox ItemsSource="{Binding SelectedPlan.Images}"
+                                                         SelectedItem="{Binding SelectedPlanImage}"
+                                                         Height="104"
+                                                         Background="Transparent"
+                                                         BorderThickness="0"
+                                                         Padding="0"
+                                                         ScrollViewer.HorizontalScrollBarVisibility="Auto"
+                                                         ScrollViewer.VerticalScrollBarVisibility="Disabled">
+                                                    <ListBox.Style>
+                                                        <Style TargetType="ListBox">
+                                                            <Setter Property="Visibility" Value="Visible" />
+                                                            <Style.Triggers>
+                                                                <DataTrigger Binding="{Binding SelectedPlan.Images.Count}" Value="0">
+                                                                    <Setter Property="Visibility" Value="Collapsed" />
+                                                                </DataTrigger>
+                                                            </Style.Triggers>
+                                                        </Style>
+                                                    </ListBox.Style>
+                                                    <ListBox.ItemsPanel>
+                                                        <ItemsPanelTemplate>
+                                                            <StackPanel Orientation="Horizontal" />
+                                                        </ItemsPanelTemplate>
+                                                    </ListBox.ItemsPanel>
+                                                    <ListBox.ItemTemplate>
+                                                        <DataTemplate>
+                                                            <Border Width="118"
+                                                                    Height="98"
+                                                                    Background="#182635"
+                                                                    BorderBrush="#243244"
+                                                                    BorderThickness="1"
+                                                                    CornerRadius="10"
+                                                                    Margin="0,0,10,0">
+                                                                <Image Source="{Binding ImageBytes, Converter={StaticResource ImageBytesToSourceConverter}}"
+                                                                       Stretch="Uniform"
+                                                                       Margin="5" />
+                                                            </Border>
+                                                        </DataTemplate>
+                                                    </ListBox.ItemTemplate>
+                                                </ListBox>
+                                                <Button Grid.Column="1"
+                                                        Content="粘贴图片"
+                                                        Style="{StaticResource ToolbarButtonStyle}"
+                                                        Command="{Binding AddPlanImageFromClipboardCommand}"
+                                                        Margin="12,0,8,0"
+                                                        VerticalAlignment="Top" />
+                                                <Button Grid.Column="2"
+                                                        Content="添加图片"
+                                                        Style="{StaticResource ToolbarButtonStyle}"
+                                                        Command="{Binding AddPlanImageFromFileCommand}"
+                                                        Margin="0,0,8,0"
+                                                        VerticalAlignment="Top" />
+                                                <Button Grid.Column="3"
+                                                        Content="删除图片"
+                                                        Style="{StaticResource ToolbarButtonStyle}"
+                                                        Command="{Binding DeleteSelectedPlanImageCommand}"
+                                                        VerticalAlignment="Top" />
+                                            </Grid>
+                                        </StackPanel>
+                                    </ScrollViewer>
+                                </Grid>
+                            </Border>
+                        </Grid>
+                    </Border>
+                </Grid>
+            </Grid>
+        </DataTemplate>
+
         <DataTemplate x:Key="SettingsTemplate">
             <Grid Background="{StaticResource PanelBrush}">
                 <Grid.Resources>
@@ -1816,6 +3667,9 @@
                             </DataTrigger>
                             <DataTrigger Binding="{Binding SelectedSection}" Value="{x:Static models:AppSection.Notes}">
                                 <Setter Property="ContentTemplate" Value="{StaticResource NotesTemplate}" />
+                            </DataTrigger>
+                            <DataTrigger Binding="{Binding SelectedSection}" Value="{x:Static models:AppSection.Plans}">
+                                <Setter Property="ContentTemplate" Value="{StaticResource PlansCalendarTemplate}" />
                             </DataTrigger>
                         </Style.Triggers>
                     </Style>

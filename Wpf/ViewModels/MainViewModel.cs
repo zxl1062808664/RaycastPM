@@ -82,7 +82,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static readonly HotKeyGesture DefaultLauncherHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "Space");
     private static readonly HotKeyGesture DefaultClipboardHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "V");
     private static readonly HotKeyGesture DefaultNotesHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "N");
+    private static readonly HotKeyGesture DefaultPlansHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "P");
     private static readonly HotKeyGesture DefaultSettingsHotKey = new(ModifierKeys.Control | ModifierKeys.Alt, "S");
+    private static readonly IReadOnlyList<string> PlanTimeOptionsSource = CreatePlanTimeOptions();
 
     private readonly StateStore _stateStore = new();
     private readonly LocalFileSearchService _fileSearch;
@@ -101,12 +103,26 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private string _clipboardQuery = string.Empty;
     private string _clipboardTypeFilter = "All";
     private string _noteQuery = string.Empty;
+    private string _planQuery = string.Empty;
+    private string _planStatusFilter = "All";
+    private string _planPriorityFilter = "All";
     private string _newNoteTitle = string.Empty;
+    private string _newPlanTitle = string.Empty;
     private string _noteFontSizeText = "18";
+    private DateTime _planCalendarMonth = new(DateTime.Today.Year, DateTime.Today.Month, 1);
+    private DateTime _selectedPlanDate = DateTime.Today;
     private LauncherSearchResult? _selectedApp;
     private ClipboardEntry? _selectedClipboardEntry;
     private NoteItem? _selectedNote;
     private NoteImageItem? _selectedNoteImage;
+    private PlanItem? _selectedPlan;
+    private NoteImageItem? _selectedPlanImage;
+    private PlanCalendarDetailItem? _selectedPlanDayDetail;
+    private string _selectedPlanTargetCompletedTimeText = string.Empty;
+    private string _selectedPlanActualCompletedTimeText = string.Empty;
+    private bool _ignoreTransientPlanSelectionClearing;
+    private bool _preservePlanEditorStateOnRefresh;
+    private bool _isPlanEditorOpen;
     private bool _isPopupOpen = true;
     private bool _isClearingCacheData;
     private bool _isSearchingLauncher;
@@ -139,15 +155,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _noteFontSizeText = Settings.NoteFontSize.ToString("0", CultureInfo.InvariantCulture);
         ClipboardItems = new ObservableCollection<ClipboardEntry>(_state.ClipboardItems);
         Notes = new ObservableCollection<NoteItem>(_state.Notes);
+        Plans = new ObservableCollection<PlanItem>(_state.PlanItems);
         FilteredApps = new ObservableCollection<LauncherSearchResult>();
         UsageItems = new ObservableCollection<LauncherSearchResult>();
         FilteredClipboardItems = new ObservableCollection<ClipboardEntry>(ClipboardItems);
         FilteredNotes = new ObservableCollection<NoteItem>(Notes);
+        FilteredPlans = new ObservableCollection<PlanItem>(Plans);
+        PlanCalendarDays = new ObservableCollection<PlanCalendarDayItem>();
+        SelectedPlanDayDetails = new ObservableCollection<PlanCalendarDetailItem>();
         HotKeyEditors = new ObservableCollection<HotKeyEditorItem>();
 
         ShowLauncherCommand = new RelayCommand(() => ShowSection(AppSection.Launcher));
         ShowClipboardCommand = new RelayCommand(() => ShowSection(AppSection.Clipboard));
         ShowNotesCommand = new RelayCommand(() => ShowSection(AppSection.Notes));
+        ShowPlansCommand = new RelayCommand(() => ShowSection(AppSection.Plans));
         ShowSettingsCommand = new RelayCommand(() => ShowSection(AppSection.Settings));
         ShowSettingsGeneralCommand = new RelayCommand(() => SelectedSettingsPage = SettingsPage.General);
         ShowUsageStatsCommand = new RelayCommand(() => SelectedSettingsPage = SettingsPage.Usage);
@@ -162,6 +183,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         AddNoteImageFromClipboardCommand = new RelayCommand(AddNoteImageFromClipboard, () => SelectedNote is not null);
         AddNoteImageFromFileCommand = new RelayCommand(AddNoteImageFromFile, () => SelectedNote is not null);
         DeleteSelectedNoteImageCommand = new RelayCommand(DeleteSelectedNoteImage, () => SelectedNoteImage is not null);
+        AddPlanCommand = new RelayCommand(AddPlan);
+        DeleteSelectedPlanCommand = new RelayCommand(DeleteSelectedPlan, () => SelectedPlan is not null);
+        CompleteSelectedPlanCommand = new RelayCommand(MarkSelectedPlanCompleted, () => SelectedPlan is not null && (SelectedPlan.Status != PlanItemStatus.Completed || SelectedPlan.ActualCompletedAt is null));
+        TogglePlanEditorCommand = new RelayCommand(TogglePlanEditor, () => SelectedPlan is not null);
+        ClosePlanEditorCommand = new RelayCommand(ClosePlanEditor, () => IsPlanEditorOpen);
+        SetSelectedPlanStatusCommand = new RelayCommand(SetSelectedPlanStatus, _ => SelectedPlan is not null);
+        SetSelectedPlanPriorityCommand = new RelayCommand(SetSelectedPlanPriority, _ => SelectedPlan is not null);
+        SetSelectedPlanTargetCompletedAtCommand = new RelayCommand(SetSelectedPlanTargetCompletedAt, _ => SelectedPlan is not null);
+        ClearSelectedPlanTargetCompletedAtCommand = new RelayCommand(ClearSelectedPlanTargetCompletedAt, () => SelectedPlan?.TargetCompletedAt is not null);
+        ClearSelectedPlanActualCompletedAtCommand = new RelayCommand(ClearSelectedPlanActualCompletedAt, () => SelectedPlan?.ActualCompletedAt is not null);
+        AddPlanImageFromClipboardCommand = new RelayCommand(AddPlanImageFromClipboard, () => SelectedPlan is not null);
+        AddPlanImageFromFileCommand = new RelayCommand(AddPlanImageFromFile, () => SelectedPlan is not null);
+        DeleteSelectedPlanImageCommand = new RelayCommand(DeleteSelectedPlanImage, () => SelectedPlanImage is not null);
+        ShowPreviousPlanMonthCommand = new RelayCommand(() => ChangePlanCalendarMonth(-1));
+        ShowCurrentPlanMonthCommand = new RelayCommand(ResetPlanCalendarToToday);
+        ShowNextPlanMonthCommand = new RelayCommand(() => ChangePlanCalendarMonth(1));
+        SelectPlanCalendarDayCommand = new RelayCommand(SelectPlanCalendarDay);
+        SelectPlanDayDetailCommand = new RelayCommand(SelectPlanDayDetail);
         RefreshRatesCommand = new RelayCommand(() => Observe(RefreshRatesAsync(), "refresh rates command"));
         CopyCalculatorResultCommand = new RelayCommand(CopyCalculatorResult, () => CalculatorResult is not null || CurrencyResult is not null);
         SaveCommand = new RelayCommand(Save);
@@ -170,6 +209,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         ClipboardItems.CollectionChanged += (_, _) => Save();
         Notes.CollectionChanged += (_, _) => Save();
+        Plans.CollectionChanged += (_, _) =>
+        {
+            NotifyPlanSummaryChanged();
+            Save();
+        };
         _clipboardMonitor.ClipboardChanged += (_, entry) => UpsertClipboardEntry(entry);
         _clipboardMonitor.Start();
         _indexProgressTimer.Interval = TimeSpan.FromMilliseconds(400);
@@ -189,7 +233,11 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _ratesRefreshTimer.Start();
         Observe(RefreshRatesIfStaleAsync(), "refresh rates on startup");
         RefreshUsageItems();
+        RefreshPlanResults();
         SelectedNote = FilteredNotes.FirstOrDefault();
+        SelectedPlan = FilteredPlans.FirstOrDefault();
+        RefreshPlanCalendar();
+        NotifyPlanSummaryChanged();
     }
 
     public AppSettings Settings => _state.Settings;
@@ -199,11 +247,17 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<ClipboardEntry> FilteredClipboardItems { get; }
     public ObservableCollection<NoteItem> Notes { get; }
     public ObservableCollection<NoteItem> FilteredNotes { get; }
+    public ObservableCollection<PlanItem> Plans { get; }
+    public ObservableCollection<PlanItem> FilteredPlans { get; }
+    public ObservableCollection<PlanCalendarDayItem> PlanCalendarDays { get; }
+    public ObservableCollection<PlanCalendarDetailItem> SelectedPlanDayDetails { get; }
     public ObservableCollection<HotKeyEditorItem> HotKeyEditors { get; }
+    public IReadOnlyList<string> PlanTimeOptions => PlanTimeOptionsSource;
 
     public RelayCommand ShowLauncherCommand { get; }
     public RelayCommand ShowClipboardCommand { get; }
     public RelayCommand ShowNotesCommand { get; }
+    public RelayCommand ShowPlansCommand { get; }
     public RelayCommand ShowSettingsCommand { get; }
     public RelayCommand ShowSettingsGeneralCommand { get; }
     public RelayCommand ShowUsageStatsCommand { get; }
@@ -218,6 +272,24 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand AddNoteImageFromClipboardCommand { get; }
     public RelayCommand AddNoteImageFromFileCommand { get; }
     public RelayCommand DeleteSelectedNoteImageCommand { get; }
+    public RelayCommand AddPlanCommand { get; }
+    public RelayCommand DeleteSelectedPlanCommand { get; }
+    public RelayCommand CompleteSelectedPlanCommand { get; }
+    public RelayCommand TogglePlanEditorCommand { get; }
+    public RelayCommand ClosePlanEditorCommand { get; }
+    public RelayCommand SetSelectedPlanStatusCommand { get; }
+    public RelayCommand SetSelectedPlanPriorityCommand { get; }
+    public RelayCommand SetSelectedPlanTargetCompletedAtCommand { get; }
+    public RelayCommand ClearSelectedPlanTargetCompletedAtCommand { get; }
+    public RelayCommand ClearSelectedPlanActualCompletedAtCommand { get; }
+    public RelayCommand AddPlanImageFromClipboardCommand { get; }
+    public RelayCommand AddPlanImageFromFileCommand { get; }
+    public RelayCommand DeleteSelectedPlanImageCommand { get; }
+    public RelayCommand ShowPreviousPlanMonthCommand { get; }
+    public RelayCommand ShowCurrentPlanMonthCommand { get; }
+    public RelayCommand ShowNextPlanMonthCommand { get; }
+    public RelayCommand SelectPlanCalendarDayCommand { get; }
+    public RelayCommand SelectPlanDayDetailCommand { get; }
     public RelayCommand RefreshRatesCommand { get; }
     public RelayCommand CopyCalculatorResultCommand { get; }
     public RelayCommand SaveCommand { get; }
@@ -350,6 +422,97 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         set => SetProperty(ref _newNoteTitle, value);
     }
 
+    public string PlanQuery
+    {
+        get => _planQuery;
+        set
+        {
+            if (SetProperty(ref _planQuery, value))
+            {
+                RefreshPlanResults();
+            }
+        }
+    }
+
+    public string PlanStatusFilter
+    {
+        get => _planStatusFilter;
+        set
+        {
+            if (SetProperty(ref _planStatusFilter, value))
+            {
+                RefreshPlanResults();
+            }
+        }
+    }
+
+    public string PlanPriorityFilter
+    {
+        get => _planPriorityFilter;
+        set
+        {
+            if (SetProperty(ref _planPriorityFilter, value))
+            {
+                RefreshPlanResults();
+            }
+        }
+    }
+
+    public string NewPlanTitle
+    {
+        get => _newPlanTitle;
+        set => SetProperty(ref _newPlanTitle, value);
+    }
+
+    public DateTime PlanCalendarMonth
+    {
+        get => _planCalendarMonth;
+        private set
+        {
+            var normalized = new DateTime(value.Year, value.Month, 1);
+            if (!SetProperty(ref _planCalendarMonth, normalized))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(PlanCalendarMonthTitle));
+            RefreshPlanCalendar();
+        }
+    }
+
+    public string PlanCalendarMonthTitle => $"{PlanCalendarMonth:yyyy年M月}";
+
+    public DateTime SelectedPlanDate
+    {
+        get => _selectedPlanDate;
+        private set
+        {
+            var normalized = value.Date;
+            if (!SetProperty(ref _selectedPlanDate, normalized))
+            {
+                return;
+            }
+
+            OnPropertyChanged(nameof(SelectedPlanDateTitle));
+            RefreshPlanCalendarSelection();
+            RefreshSelectedPlanDayDetails();
+        }
+    }
+
+    public string SelectedPlanDateTitle => $"{SelectedPlanDate:yyyy/M/d dddd}";
+
+    public bool IsPlanEditorOpen
+    {
+        get => _isPlanEditorOpen;
+        set
+        {
+            if (SetProperty(ref _isPlanEditorOpen, value))
+            {
+                ClosePlanEditorCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
     public double NoteFontSize
     {
         get => Settings.NoteFontSize;
@@ -459,6 +622,129 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
     }
 
+    public PlanItem? SelectedPlan
+    {
+        get => _selectedPlan;
+        set
+        {
+            var previousId = _selectedPlan?.Id;
+            if (_selectedPlan is not null)
+            {
+                _selectedPlan.PropertyChanged -= OnSelectedPlanChanged;
+            }
+
+            if (SetProperty(ref _selectedPlan, value))
+            {
+                var selectionChanged = previousId != value?.Id;
+                DeleteSelectedPlanCommand.RaiseCanExecuteChanged();
+                CompleteSelectedPlanCommand.RaiseCanExecuteChanged();
+                TogglePlanEditorCommand.RaiseCanExecuteChanged();
+                ClosePlanEditorCommand.RaiseCanExecuteChanged();
+                SetSelectedPlanStatusCommand.RaiseCanExecuteChanged();
+                SetSelectedPlanPriorityCommand.RaiseCanExecuteChanged();
+                SetSelectedPlanTargetCompletedAtCommand.RaiseCanExecuteChanged();
+                ClearSelectedPlanTargetCompletedAtCommand.RaiseCanExecuteChanged();
+                ClearSelectedPlanActualCompletedAtCommand.RaiseCanExecuteChanged();
+                AddPlanImageFromClipboardCommand.RaiseCanExecuteChanged();
+                AddPlanImageFromFileCommand.RaiseCanExecuteChanged();
+                SelectedPlanImage = _selectedPlan?.Images.FirstOrDefault();
+                SyncSelectedPlanTimeEditors();
+                if (value is null)
+                {
+                    if (!_ignoreTransientPlanSelectionClearing)
+                    {
+                        IsPlanEditorOpen = false;
+                    }
+                }
+                else if (selectionChanged && !_preservePlanEditorStateOnRefresh)
+                {
+                    IsPlanEditorOpen = false;
+                }
+            }
+
+            if (_selectedPlan is not null)
+            {
+                _selectedPlan.PropertyChanged += OnSelectedPlanChanged;
+            }
+        }
+    }
+
+    public NoteImageItem? SelectedPlanImage
+    {
+        get => _selectedPlanImage;
+        set
+        {
+            if (SetProperty(ref _selectedPlanImage, value))
+            {
+                DeleteSelectedPlanImageCommand.RaiseCanExecuteChanged();
+            }
+        }
+    }
+
+    public PlanCalendarDetailItem? SelectedPlanDayDetail
+    {
+        get => _selectedPlanDayDetail;
+        private set
+        {
+            if (SetProperty(ref _selectedPlanDayDetail, value) && value is not null)
+            {
+                SelectedPlan = value.Plan;
+            }
+        }
+    }
+
+    public string SelectedPlanTargetCompletedTimeText
+    {
+        get => _selectedPlanTargetCompletedTimeText;
+        set
+        {
+            if (SetProperty(ref _selectedPlanTargetCompletedTimeText, value))
+            {
+                ApplySelectedPlanTargetCompletedTimeText();
+            }
+        }
+    }
+
+    public DateTime? SelectedPlanTargetCompletedDate
+    {
+        get => SelectedPlan?.TargetCompletedAt?.Date;
+        set
+        {
+            if (SelectedPlan is null || value is null)
+            {
+                return;
+            }
+
+            SetSelectedPlanTargetCompletedDate(value.Value);
+        }
+    }
+
+    public string SelectedPlanActualCompletedTimeText
+    {
+        get => _selectedPlanActualCompletedTimeText;
+        set
+        {
+            if (SetProperty(ref _selectedPlanActualCompletedTimeText, value))
+            {
+                ApplySelectedPlanActualCompletedTimeText();
+            }
+        }
+    }
+
+    public DateTime? SelectedPlanActualCompletedDate
+    {
+        get => SelectedPlan?.ActualCompletedAt?.Date;
+        set
+        {
+            if (SelectedPlan is null || value is null)
+            {
+                return;
+            }
+
+            SetSelectedPlanActualCompletedDate(value.Value);
+        }
+    }
+
     public double? CalculatorResult
     {
         get => _calculatorResult;
@@ -494,6 +780,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public bool HasToolResult => CalculatorResult is not null || CurrencyResult is not null;
 
     public string DataFolder => _stateStore.FolderPath;
+
+    public int PlanTotalCount => Plans.Count;
+
+    public int PlanCompletedCount => Plans.Count(item => item.Status == PlanItemStatus.Completed);
+
+    public int PlanPendingCount => Plans.Count(item => item.Status != PlanItemStatus.Completed);
+
+    public int PlanOverdueCount => Plans.Count(item =>
+        item.Status != PlanItemStatus.Completed
+        && item.TargetCompletedAt is { } targetCompletedAt
+        && targetCompletedAt < DateTime.Now);
+
+    public int SelectedPlanDateCount => SelectedPlanDayDetails.Count;
 
     public bool StartWithWindows
     {
@@ -762,6 +1061,14 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             HotKeyOptions,
             ShowSettingsCommand,
             ApplyHotKeyEditorChange));
+        HotKeyEditors.Add(new HotKeyEditorItem(
+            "计划",
+            AppSection.Plans,
+            Settings.PlansHotKey,
+            DefaultPlansHotKey,
+            HotKeyOptions,
+            ShowPlansCommand,
+            ApplyHotKeyEditorChange));
     }
 
     private void ApplyHotKeyEditorChange(HotKeyEditorItem editor)
@@ -776,6 +1083,9 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 break;
             case AppSection.Notes:
                 Settings.NotesHotKey = editor.Gesture;
+                break;
+            case AppSection.Plans:
+                Settings.PlansHotKey = editor.Gesture;
                 break;
             case AppSection.Settings:
                 Settings.SettingsHotKey = editor.Gesture;
@@ -819,6 +1129,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         Register(Settings.LauncherHotKey, AppSection.Launcher);
         Register(Settings.ClipboardHotKey, AppSection.Clipboard);
         Register(Settings.NotesHotKey, AppSection.Notes);
+        Register(Settings.PlansHotKey, AppSection.Plans);
         Register(Settings.SettingsHotKey, AppSection.Settings);
     }
 
@@ -828,6 +1139,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         {
             _state.ClipboardItems = ClipboardItems.Take(120).ToList();
             _state.Notes = Notes.ToList();
+            _state.PlanItems = Plans.ToList();
             _stateStore.Save(_state);
         }
         catch (Exception ex)
@@ -1897,6 +2209,69 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 ?? FilteredNotes.FirstOrDefault();
     }
 
+    private void RefreshPlanResults()
+    {
+        var selectedId = SelectedPlan?.Id;
+        var keepEditorOpen = IsPlanEditorOpen;
+        var query = PlanQuery.Trim();
+        IEnumerable<PlanItem> items = Plans;
+
+        items = PlanStatusFilter switch
+        {
+            "NotStarted" => items.Where(item => item.Status == PlanItemStatus.NotStarted),
+            "InProgress" => items.Where(item => item.Status == PlanItemStatus.InProgress),
+            "Completed" => items.Where(item => item.Status == PlanItemStatus.Completed),
+            "Blocked" => items.Where(item => item.Status == PlanItemStatus.Blocked),
+            _ => items
+        };
+
+        items = PlanPriorityFilter switch
+        {
+            "High" => items.Where(item => item.Priority == PlanPriority.High),
+            "Medium" => items.Where(item => item.Priority == PlanPriority.Medium),
+            "Low" => items.Where(item => item.Priority == PlanPriority.Low),
+            _ => items
+        };
+
+        if (!string.IsNullOrWhiteSpace(query))
+        {
+            items = items.Where(item =>
+                item.Title.Contains(query, StringComparison.CurrentCultureIgnoreCase)
+                || item.Description.Contains(query, StringComparison.CurrentCultureIgnoreCase));
+        }
+
+        items = items
+            .OrderBy(item => item.Status == PlanItemStatus.Completed)
+            .ThenByDescending(item => item.Priority)
+            .ThenBy(item => item.TargetCompletedAt ?? DateTime.MaxValue)
+            .ThenByDescending(item => item.UpdatedAt);
+
+        Replace(FilteredPlans, items);
+        var nextSelectedPlan = selectedId is null
+            ? FilteredPlans.FirstOrDefault()
+            : FilteredPlans.FirstOrDefault(item => item.Id == selectedId)
+                ?? FilteredPlans.FirstOrDefault();
+        _ignoreTransientPlanSelectionClearing = true;
+        _preservePlanEditorStateOnRefresh = true;
+        try
+        {
+            SelectedPlan = nextSelectedPlan;
+        }
+        finally
+        {
+            _preservePlanEditorStateOnRefresh = false;
+            _ignoreTransientPlanSelectionClearing = false;
+        }
+
+        if (nextSelectedPlan is not null)
+        {
+            IsPlanEditorOpen = keepEditorOpen;
+        }
+
+        RefreshPlanCalendar();
+        NotifyPlanSummaryChanged();
+    }
+
     private void AddNote()
     {
         var note = new NoteItem
@@ -1920,6 +2295,508 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         Notes.Remove(SelectedNote);
         RefreshNoteResults();
+        Save();
+    }
+
+    private void AddPlan()
+    {
+        var now = DateTime.Now;
+        var item = new PlanItem
+        {
+            Title = string.IsNullOrWhiteSpace(NewPlanTitle) ? "新计划" : NewPlanTitle.Trim(),
+            Status = PlanItemStatus.NotStarted,
+            Priority = PlanPriority.Medium,
+            StartAt = now
+        };
+
+        Plans.Insert(0, item);
+        NewPlanTitle = string.Empty;
+        RefreshPlanResults();
+        SelectedPlan = item;
+        SelectedPlanDate = item.StartAt.Date;
+        IsPlanEditorOpen = false;
+        Save();
+    }
+
+    private void DeleteSelectedPlan()
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        IsPlanEditorOpen = false;
+        Plans.Remove(SelectedPlan);
+        RefreshPlanResults();
+        Save();
+    }
+
+    private void MarkSelectedPlanCompleted()
+    {
+        ApplySelectedPlanStatus(PlanItemStatus.Completed);
+    }
+
+    private void TogglePlanEditor()
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        IsPlanEditorOpen = !IsPlanEditorOpen;
+    }
+
+    private void ClosePlanEditor()
+    {
+        IsPlanEditorOpen = false;
+    }
+
+    private void SetSelectedPlanStatus(object? parameter)
+    {
+        if (parameter is PlanItemStatus status)
+        {
+            ApplySelectedPlanStatus(status);
+            return;
+        }
+
+        if (parameter is string text && Enum.TryParse<PlanItemStatus>(text, out var parsed))
+        {
+            ApplySelectedPlanStatus(parsed);
+        }
+    }
+
+    private void SetSelectedPlanPriority(object? parameter)
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        if (parameter is PlanPriority priority)
+        {
+            SelectedPlan.Priority = priority;
+            TouchSelectedPlan();
+            return;
+        }
+
+        if (parameter is string text && Enum.TryParse<PlanPriority>(text, out var parsed))
+        {
+            SelectedPlan.Priority = parsed;
+            TouchSelectedPlan();
+        }
+    }
+
+    private void SetSelectedPlanTargetCompletedAt(object? parameter)
+    {
+        if (SelectedPlan is null || parameter is not DateTime date)
+        {
+            return;
+        }
+
+        SetSelectedPlanTargetCompletedDate(date);
+    }
+
+    private void ClearSelectedPlanTargetCompletedAt()
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        SelectedPlan.TargetCompletedAt = null;
+        SelectedPlanTargetCompletedTimeText = string.Empty;
+        TouchSelectedPlan();
+    }
+
+    private void ClearSelectedPlanActualCompletedAt()
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        SelectedPlan.ActualCompletedAt = null;
+        SelectedPlanActualCompletedTimeText = string.Empty;
+        TouchSelectedPlan();
+    }
+
+    private void ApplySelectedPlanStatus(PlanItemStatus status)
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        var changed = false;
+        if (SelectedPlan.Status != status)
+        {
+            SelectedPlan.Status = status;
+            changed = true;
+        }
+
+        if (status == PlanItemStatus.Completed)
+        {
+            if (SelectedPlan.ActualCompletedAt is null)
+            {
+                SelectedPlan.ActualCompletedAt = DateTime.Now;
+                SelectedPlanActualCompletedTimeText = FormatPlanTime(SelectedPlan.ActualCompletedAt.Value);
+                changed = true;
+            }
+        }
+        else if (SelectedPlan.ActualCompletedAt is not null)
+        {
+            SelectedPlan.ActualCompletedAt = null;
+            SelectedPlanActualCompletedTimeText = string.Empty;
+            changed = true;
+        }
+
+        if (changed)
+        {
+            if (SelectedPlan is not null)
+            {
+                SelectedPlanDate = SelectedPlan.TargetCompletedAt?.Date
+                    ?? SelectedPlan.ActualCompletedAt?.Date
+                    ?? SelectedPlan.StartAt.Date;
+            }
+
+            TouchSelectedPlan();
+        }
+    }
+
+    private void ApplySelectedPlanTargetCompletedTimeText()
+    {
+        if (SelectedPlan?.TargetCompletedAt is not { } targetCompletedAt)
+        {
+            return;
+        }
+
+        var time = ParsePlanTimeText(SelectedPlanTargetCompletedTimeText);
+        var next = targetCompletedAt.Date.Add(time);
+        if (next == targetCompletedAt)
+        {
+            return;
+        }
+
+        SelectedPlan.TargetCompletedAt = next;
+        SelectedPlanDate = next.Date;
+        TouchSelectedPlan();
+    }
+
+    private void ApplySelectedPlanActualCompletedTimeText()
+    {
+        if (SelectedPlan?.ActualCompletedAt is not { } actualCompletedAt)
+        {
+            return;
+        }
+
+        var time = ParsePlanTimeText(SelectedPlanActualCompletedTimeText);
+        var next = actualCompletedAt.Date.Add(time);
+        if (next == actualCompletedAt)
+        {
+            return;
+        }
+
+        SelectedPlan.ActualCompletedAt = next;
+        SelectedPlanDate = next.Date;
+        TouchSelectedPlan();
+    }
+
+    private void SetSelectedPlanTargetCompletedDate(DateTime date)
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        var time = SelectedPlan.TargetCompletedAt?.TimeOfDay
+            ?? ParsePlanTimeText(SelectedPlanTargetCompletedTimeText);
+        var next = date.Date.Add(time);
+        if (SelectedPlan.TargetCompletedAt == next)
+        {
+            return;
+        }
+
+        SelectedPlan.TargetCompletedAt = next;
+        TouchSelectedPlan();
+    }
+
+    private void SetSelectedPlanActualCompletedDate(DateTime date)
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        var time = SelectedPlan.ActualCompletedAt?.TimeOfDay
+            ?? ParsePlanTimeText(SelectedPlanActualCompletedTimeText);
+        var next = date.Date.Add(time);
+        if (SelectedPlan.ActualCompletedAt == next)
+        {
+            return;
+        }
+
+        SelectedPlan.ActualCompletedAt = next;
+        TouchSelectedPlan();
+    }
+
+    private void SyncSelectedPlanTimeEditors()
+    {
+        var targetText = SelectedPlan?.TargetCompletedAt is { } targetCompletedAt
+            ? FormatPlanTime(targetCompletedAt)
+            : string.Empty;
+        var actualText = SelectedPlan?.ActualCompletedAt is { } actualCompletedAt
+            ? FormatPlanTime(actualCompletedAt)
+            : string.Empty;
+
+        SetProperty(ref _selectedPlanTargetCompletedTimeText, targetText, nameof(SelectedPlanTargetCompletedTimeText));
+        SetProperty(ref _selectedPlanActualCompletedTimeText, actualText, nameof(SelectedPlanActualCompletedTimeText));
+        OnPropertyChanged(nameof(SelectedPlanTargetCompletedDate));
+        OnPropertyChanged(nameof(SelectedPlanActualCompletedDate));
+    }
+
+    private void ChangePlanCalendarMonth(int offset)
+    {
+        PlanCalendarMonth = PlanCalendarMonth.AddMonths(offset);
+    }
+
+    private void ResetPlanCalendarToToday()
+    {
+        PlanCalendarMonth = new DateTime(DateTime.Today.Year, DateTime.Today.Month, 1);
+        SelectedPlanDate = DateTime.Today;
+    }
+
+    private void SelectPlanCalendarDay(object? parameter)
+    {
+        if (parameter is PlanCalendarDayItem day)
+        {
+            if (!day.IsCurrentMonth)
+            {
+                PlanCalendarMonth = new DateTime(day.Date.Year, day.Date.Month, 1);
+            }
+
+            SelectedPlanDate = day.Date;
+        }
+    }
+
+    private void SelectPlanDayDetail(object? parameter)
+    {
+        if (parameter is not PlanCalendarDetailItem detail)
+        {
+            return;
+        }
+
+        SelectedPlanDayDetail = detail;
+        SelectedPlan = detail.Plan;
+        IsPlanEditorOpen = false;
+        RefreshSelectedPlanDayDetails();
+    }
+
+    private void RefreshPlanCalendar()
+    {
+        var firstVisibleDate = GetCalendarStartDate(PlanCalendarMonth);
+        var days = Enumerable.Range(0, 42)
+            .Select(index =>
+            {
+                var date = firstVisibleDate.AddDays(index);
+                return new PlanCalendarDayItem
+                {
+                    Date = date,
+                    IsCurrentMonth = date.Month == PlanCalendarMonth.Month && date.Year == PlanCalendarMonth.Year,
+                    IsToday = date == DateTime.Today,
+                    Plans = GetPlansForDate(date).ToList()
+                };
+            })
+            .ToList();
+
+        Replace(PlanCalendarDays, days);
+        RefreshPlanCalendarSelection();
+
+        if (SelectedPlanDate < firstVisibleDate || SelectedPlanDate > firstVisibleDate.AddDays(41))
+        {
+            SelectedPlanDate = PlanCalendarMonth;
+            return;
+        }
+
+        RefreshSelectedPlanDayDetails();
+    }
+
+    private void RefreshPlanCalendarSelection()
+    {
+        foreach (var day in PlanCalendarDays)
+        {
+            day.IsSelected = day.Date == SelectedPlanDate;
+        }
+    }
+
+    private void RefreshSelectedPlanDayDetails()
+    {
+        var items = GetPlansForDate(SelectedPlanDate)
+            .Select(plan => new PlanCalendarDetailItem
+            {
+                Plan = plan,
+                DateText = BuildPlanDateRangeText(plan),
+                TimeText = BuildPlanTimeText(plan, SelectedPlanDate),
+                DurationText = BuildPlanDurationText(plan),
+                StatusText = plan.StatusText,
+                PriorityText = plan.PriorityText,
+                SummaryText = plan.SummaryText,
+                TagText = BuildPlanTagText(plan)
+            })
+            .ToList();
+
+        Replace(SelectedPlanDayDetails, items);
+
+        PlanCalendarDetailItem? nextDetail = null;
+        if (SelectedPlan is not null)
+        {
+            nextDetail = items.FirstOrDefault(item => item.Plan.Id == SelectedPlan.Id);
+        }
+
+        nextDetail ??= items.FirstOrDefault();
+        SelectedPlanDayDetail = nextDetail;
+
+        if (nextDetail is null)
+        {
+            SelectedPlan = null;
+            IsPlanEditorOpen = false;
+        }
+
+        foreach (var item in SelectedPlanDayDetails)
+        {
+            item.IsSelected = item == nextDetail;
+        }
+
+        OnPropertyChanged(nameof(SelectedPlanDateCount));
+    }
+
+    private IEnumerable<PlanItem> GetPlansForDate(DateTime date)
+    {
+        return FilteredPlans
+            .Where(plan => IsPlanOnDate(plan, date))
+            .OrderBy(plan => plan.Status == PlanItemStatus.Completed)
+            .ThenByDescending(plan => plan.Priority)
+            .ThenBy(plan => GetPlanSortDate(plan, date))
+            .ThenByDescending(plan => plan.UpdatedAt);
+    }
+
+    private static bool IsPlanOnDate(PlanItem plan, DateTime date)
+    {
+        var day = date.Date;
+        var startDate = plan.StartAt.Date;
+        var endDate = plan.TargetCompletedAt?.Date
+            ?? plan.ActualCompletedAt?.Date
+            ?? startDate;
+
+        if (endDate < startDate)
+        {
+            endDate = startDate;
+        }
+
+        return day >= startDate && day <= endDate;
+    }
+
+    private static DateTime GetPlanSortDate(PlanItem plan, DateTime fallbackDate)
+    {
+        if (plan.TargetCompletedAt is { } target)
+        {
+            return target;
+        }
+
+        if (plan.ActualCompletedAt is { } actual)
+        {
+            return actual;
+        }
+
+        return plan.StartAt;
+    }
+
+    private static DateTime GetCalendarStartDate(DateTime month)
+    {
+        var firstDay = new DateTime(month.Year, month.Month, 1);
+        var offset = ((int)firstDay.DayOfWeek + 6) % 7;
+        return firstDay.AddDays(-offset);
+    }
+
+    private static string BuildPlanDateRangeText(PlanItem plan)
+    {
+        var start = plan.StartAt.ToString("yyyy/M/d");
+        var end = plan.TargetCompletedAt?.ToString("yyyy/M/d");
+        return end is null ? $"日程 {start}" : $"日程 {start} 至 {end}";
+    }
+
+    private static string BuildPlanTimeText(PlanItem plan, DateTime selectedDate)
+    {
+        if (plan.TargetCompletedAt is { } target && target.Date == selectedDate.Date)
+        {
+            return $"计划完成 {target:HH:mm}";
+        }
+
+        if (plan.ActualCompletedAt is { } actual && actual.Date == selectedDate.Date)
+        {
+            return $"实际完成 {actual:HH:mm}";
+        }
+
+        if (plan.StartAt.Date == selectedDate.Date)
+        {
+            return $"开始时间 {plan.StartAt:HH:mm}";
+        }
+
+        return "全天安排";
+    }
+
+    private static string BuildPlanDurationText(PlanItem plan)
+    {
+        var end = plan.TargetCompletedAt?.Date ?? plan.StartAt.Date;
+        var days = Math.Max(1, (end - plan.StartAt.Date).Days + 1);
+        return days == 1 ? "1天安排" : $"{days}天安排";
+    }
+
+    private static string BuildPlanTagText(PlanItem plan)
+    {
+        return plan.Status switch
+        {
+            PlanItemStatus.Completed => "已完成",
+            PlanItemStatus.Blocked => "已阻塞",
+            PlanItemStatus.InProgress when plan.TargetCompletedAt is { } target && target < DateTime.Now => "已延期",
+            PlanItemStatus.NotStarted when plan.TargetCompletedAt is { } target && target < DateTime.Now => "已延期",
+            _ => "进行中"
+        };
+    }
+
+    private static TimeSpan ParsePlanTimeText(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value))
+        {
+            return TimeSpan.Zero;
+        }
+
+        if (TimeSpan.TryParseExact(value.Trim(), @"hh\:mm", CultureInfo.InvariantCulture, out var exact))
+        {
+            return exact;
+        }
+
+        if (TimeSpan.TryParse(value.Trim(), CultureInfo.CurrentCulture, out var parsed))
+        {
+            return new TimeSpan(parsed.Hours, parsed.Minutes, 0);
+        }
+
+        return TimeSpan.Zero;
+    }
+
+    private static string FormatPlanTime(DateTime value)
+    {
+        return value.ToString("HH:mm");
+    }
+
+    private void TouchSelectedPlan()
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        SelectedPlan.UpdatedAt = DateTimeOffset.Now;
+        RefreshPlanResults();
         Save();
     }
 
@@ -2008,6 +2885,108 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SelectedNote.Images.Add(item);
         SelectedNoteImage = item;
         TouchSelectedNote();
+    }
+
+    private void AddPlanImageFromClipboard()
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        try
+        {
+            BitmapSource? image = null;
+            if (WpfClipboard.ContainsImage())
+            {
+                image = WpfClipboard.GetImage();
+            }
+            else if (WpfClipboard.ContainsFileDropList())
+            {
+                foreach (var file in WpfClipboard.GetFileDropList().Cast<string>())
+                {
+                    if (TryLoadNoteImage(file) is not { } fileImage)
+                    {
+                        continue;
+                    }
+
+                    AddPlanImage(fileImage);
+                }
+
+                return;
+            }
+
+            if (image is null)
+            {
+                return;
+            }
+
+            AddPlanImage(image);
+        }
+        catch (Exception ex)
+        {
+            AppDiagnostics.LogException(ex, "add plan image from clipboard");
+        }
+    }
+
+    private void AddPlanImageFromFile()
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        var dialog = new WpfOpenFileDialog
+        {
+            Filter = "图片文件|*.png;*.jpg;*.jpeg;*.bmp;*.gif;*.tif;*.tiff;*.webp|所有文件|*.*",
+            Multiselect = true
+        };
+
+        if (dialog.ShowDialog() != true)
+        {
+            return;
+        }
+
+        foreach (var file in dialog.FileNames)
+        {
+            if (TryLoadNoteImage(file) is { } image)
+            {
+                AddPlanImage(image);
+            }
+        }
+    }
+
+    private void AddPlanImage(BitmapSource image)
+    {
+        if (SelectedPlan is null)
+        {
+            return;
+        }
+
+        var normalized = ClipboardImageNormalizer.RestoreOpaqueAlphaIfFullyTransparent(image);
+        var item = new NoteImageItem
+        {
+            ImageBytes = EncodeNoteImage(normalized)
+        };
+
+        SelectedPlan.Images.Add(item);
+        SelectedPlanImage = item;
+        TouchSelectedPlan();
+    }
+
+    private void DeleteSelectedPlanImage()
+    {
+        if (SelectedPlan is null || SelectedPlanImage is null)
+        {
+            return;
+        }
+
+        var index = SelectedPlan.Images.IndexOf(SelectedPlanImage);
+        SelectedPlan.Images.Remove(SelectedPlanImage);
+        SelectedPlanImage = SelectedPlan.Images.Count == 0
+            ? null
+            : SelectedPlan.Images[Math.Clamp(index, 0, SelectedPlan.Images.Count - 1)];
+        TouchSelectedPlan();
     }
 
     private void DeleteSelectedNoteImage()
@@ -2163,6 +3142,18 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return value.ToString("#,0.##", CultureInfo.InvariantCulture);
     }
 
+    private static IReadOnlyList<string> CreatePlanTimeOptions()
+    {
+        var values = new List<string>(48);
+        for (var hour = 0; hour < 24; hour++)
+        {
+            values.Add($"{hour:00}:00");
+            values.Add($"{hour:00}:30");
+        }
+
+        return values;
+    }
+
     private static string FormatBytesPerSecond(double bytesPerSecond)
     {
         string[] units = ["B/s", "KB/s", "MB/s", "GB/s"];
@@ -2188,6 +3179,31 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         note.UpdatedAt = DateTimeOffset.Now;
         Save();
+    }
+
+    private void OnSelectedPlanChanged(object? sender, PropertyChangedEventArgs e)
+    {
+        if (sender is not PlanItem item || e.PropertyName == nameof(PlanItem.UpdatedAt))
+        {
+            return;
+        }
+
+        item.UpdatedAt = DateTimeOffset.Now;
+        CompleteSelectedPlanCommand.RaiseCanExecuteChanged();
+        ClosePlanEditorCommand.RaiseCanExecuteChanged();
+        SetSelectedPlanTargetCompletedAtCommand.RaiseCanExecuteChanged();
+        ClearSelectedPlanTargetCompletedAtCommand.RaiseCanExecuteChanged();
+        ClearSelectedPlanActualCompletedAtCommand.RaiseCanExecuteChanged();
+        NotifyPlanSummaryChanged();
+        Save();
+    }
+
+    private void NotifyPlanSummaryChanged()
+    {
+        OnPropertyChanged(nameof(PlanTotalCount));
+        OnPropertyChanged(nameof(PlanCompletedCount));
+        OnPropertyChanged(nameof(PlanPendingCount));
+        OnPropertyChanged(nameof(PlanOverdueCount));
     }
 
     private static void Observe(Task task, string context)
