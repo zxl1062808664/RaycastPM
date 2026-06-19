@@ -23,6 +23,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private static readonly ChineseLunisolarCalendar ChineseCalendar = new();
     private static readonly TimeSpan ExchangeRateRefreshInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan SystemMonitorRefreshInterval = TimeSpan.FromSeconds(1);
+    private static readonly TimeSpan PlanSummaryRefreshInterval = TimeSpan.FromMinutes(1);
     private const string WebSearchUrlTemplate = "https://www.bing.com/search?q={0}";
     private static readonly string[] LunarMonthNames =
     [
@@ -140,6 +141,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private readonly DispatcherTimer _indexProgressTimer = new();
     private readonly DispatcherTimer _launcherSearchDebounceTimer = new();
     private readonly DispatcherTimer _systemMonitorTimer = new();
+    private readonly DispatcherTimer _planSummaryTimer = new();
     private readonly CancellationTokenSource _fileInitializationCancellation = new();
     private readonly AppState _state;
     private AppSection _selectedSection = AppSection.Settings;
@@ -176,6 +178,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private bool _isRefreshingSystemMonitor;
     private bool _isMainWindowVisible = true;
     private bool _isSystemMonitorPanelVisible;
+    private bool _isPlanSummaryWindowVisible;
     private double _indexProgressValue;
     private string _indexProgressText = "正在扫描磁盘...";
     private string _systemMonitorNetworkText = "↓ 0 B/s  ↑ 0 B/s";
@@ -209,6 +212,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         FilteredPlans = new ObservableCollection<PlanItem>(Plans);
         PlanCalendarDays = new ObservableCollection<PlanCalendarDayItem>();
         SelectedPlanDayDetails = new ObservableCollection<PlanCalendarDetailItem>();
+        TodayPlanSummaryItems = new ObservableCollection<PlanCalendarEventItem>();
         HotKeyEditors = new ObservableCollection<HotKeyEditorItem>();
 
         ShowLauncherCommand = new RelayCommand(() => ShowSection(AppSection.Launcher));
@@ -231,6 +235,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         DeleteSelectedNoteImageCommand = new RelayCommand(DeleteSelectedNoteImage, () => SelectedNoteImage is not null);
         AddPlanCommand = new RelayCommand(AddPlan);
         DeleteSelectedPlanCommand = new RelayCommand(DeleteSelectedPlan, () => SelectedPlan is not null);
+        DeletePlanItemCommand = new RelayCommand(DeletePlanItem);
         CompleteSelectedPlanCommand = new RelayCommand(MarkSelectedPlanCompleted, () => SelectedPlan is not null && (SelectedPlan.Status != PlanItemStatus.Completed || SelectedPlan.ActualCompletedAt is null));
         TogglePlanEditorCommand = new RelayCommand(TogglePlanEditor, () => SelectedPlan is not null);
         ClosePlanEditorCommand = new RelayCommand(ClosePlanEditor, () => IsPlanEditorOpen);
@@ -269,6 +274,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _launcherSearchDebounceTimer.Tick += OnLauncherSearchDebounceTimerTick;
         _systemMonitorTimer.Interval = SystemMonitorRefreshInterval;
         _systemMonitorTimer.Tick += OnSystemMonitorTimerTick;
+        _planSummaryTimer.Interval = PlanSummaryRefreshInterval;
+        _planSummaryTimer.Tick += OnPlanSummaryTimerTick;
         if (Settings.SystemMonitorEnabled)
         {
             ApplySystemMonitorTimerPolicy();
@@ -284,6 +291,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SelectedNote = FilteredNotes.FirstOrDefault();
         SelectedPlan = FilteredPlans.FirstOrDefault();
         RefreshPlanCalendar();
+        RefreshTodayPlanSummaryItems();
         NotifyPlanSummaryChanged();
     }
 
@@ -298,6 +306,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public ObservableCollection<PlanItem> FilteredPlans { get; }
     public ObservableCollection<PlanCalendarDayItem> PlanCalendarDays { get; }
     public ObservableCollection<PlanCalendarDetailItem> SelectedPlanDayDetails { get; }
+    public ObservableCollection<PlanCalendarEventItem> TodayPlanSummaryItems { get; }
     public ObservableCollection<HotKeyEditorItem> HotKeyEditors { get; }
     public IReadOnlyList<string> PlanTimeOptions => PlanTimeOptionsSource;
 
@@ -321,6 +330,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand DeleteSelectedNoteImageCommand { get; }
     public RelayCommand AddPlanCommand { get; }
     public RelayCommand DeleteSelectedPlanCommand { get; }
+    public RelayCommand DeletePlanItemCommand { get; }
     public RelayCommand CompleteSelectedPlanCommand { get; }
     public RelayCommand TogglePlanEditorCommand { get; }
     public RelayCommand ClosePlanEditorCommand { get; }
@@ -875,6 +885,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
     public int SelectedPlanDateCount => SelectedPlanDayDetails.Count;
 
+    public int TodayPlanSummaryCount => TodayPlanSummaryItems.Count;
+
     public bool StartWithWindows
     {
         get => _startWithWindows;
@@ -955,6 +967,72 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 StopSystemMonitor();
             }
 
+            OnPropertyChanged();
+            Save();
+        }
+    }
+
+    public bool PlanSummaryWindowEnabled
+    {
+        get => Settings.PlanSummaryWindowEnabled;
+        set
+        {
+            if (Settings.PlanSummaryWindowEnabled == value)
+            {
+                return;
+            }
+
+            Settings.PlanSummaryWindowEnabled = value;
+            OnPropertyChanged();
+            ApplyPlanSummaryTimerPolicy(refreshImmediately: value);
+            Save();
+        }
+    }
+
+    public bool PlanSummaryWindowTopmost
+    {
+        get => Settings.PlanSummaryWindowTopmost;
+        set
+        {
+            if (Settings.PlanSummaryWindowTopmost == value)
+            {
+                return;
+            }
+
+            Settings.PlanSummaryWindowTopmost = value;
+            OnPropertyChanged();
+            Save();
+        }
+    }
+
+    public bool PlanSummaryWindowClickThrough
+    {
+        get => Settings.PlanSummaryWindowClickThrough;
+        set
+        {
+            if (Settings.PlanSummaryWindowClickThrough == value)
+            {
+                return;
+            }
+
+            Settings.PlanSummaryWindowClickThrough = value;
+            OnPropertyChanged();
+            Save();
+        }
+    }
+
+    public double PlanSummaryWindowOpacity
+    {
+        get => Settings.PlanSummaryWindowOpacity;
+        set
+        {
+            var normalized = Math.Clamp(value, 0.2, 1.0);
+            if (Math.Abs(Settings.PlanSummaryWindowOpacity - normalized) < 0.001)
+            {
+                return;
+            }
+
+            Settings.PlanSummaryWindowOpacity = normalized;
             OnPropertyChanged();
             Save();
         }
@@ -1052,7 +1130,20 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ApplyIdleTimerPolicy();
     }
 
+    public void SetPlanSummaryWindowVisible(bool isVisible)
+    {
+        if (_disposed || _isPlanSummaryWindowVisible == isVisible)
+        {
+            return;
+        }
+
+        _isPlanSummaryWindowVisible = isVisible;
+        ApplyPlanSummaryTimerPolicy(refreshImmediately: isVisible);
+    }
+
     private bool ShouldRunSystemMonitor => Settings.SystemMonitorEnabled && _isSystemMonitorPanelVisible;
+
+    private bool ShouldRunPlanSummary => Settings.PlanSummaryWindowEnabled && _isPlanSummaryWindowVisible;
 
     private void ApplyIdleTimerPolicy()
     {
@@ -1105,6 +1196,34 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         if (refreshImmediately)
         {
             Observe(RefreshSystemMonitorAsync(), "refresh system monitor");
+        }
+    }
+
+    private void OnPlanSummaryTimerTick(object? sender, EventArgs e)
+    {
+        if (ShouldRunPlanSummary)
+        {
+            RefreshTodayPlanSummaryItems();
+        }
+    }
+
+    private void ApplyPlanSummaryTimerPolicy(bool refreshImmediately = false)
+    {
+        if (!ShouldRunPlanSummary)
+        {
+            _planSummaryTimer.Stop();
+            return;
+        }
+
+        _planSummaryTimer.Interval = PlanSummaryRefreshInterval;
+        if (!_planSummaryTimer.IsEnabled)
+        {
+            _planSummaryTimer.Start();
+        }
+
+        if (refreshImmediately)
+        {
+            RefreshTodayPlanSummaryItems();
         }
     }
 
@@ -1243,6 +1362,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         _launcherSearchDebounceTimer.Tick -= OnLauncherSearchDebounceTimerTick;
         _systemMonitorTimer.Stop();
         _systemMonitorTimer.Tick -= OnSystemMonitorTimerTick;
+        _planSummaryTimer.Stop();
+        _planSummaryTimer.Tick -= OnPlanSummaryTimerTick;
         _ratesRefreshTimer.Stop();
         _ratesRefreshTimer.Tick -= OnRatesRefreshTimerTick;
         _clipboardMonitor.Stop();
@@ -2350,6 +2471,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         RefreshPlanCalendar();
+        RefreshTodayPlanSummaryItems();
         NotifyPlanSummaryChanged();
     }
 
@@ -2408,6 +2530,33 @@ public sealed class MainViewModel : ObservableObject, IDisposable
 
         IsPlanEditorOpen = false;
         Plans.Remove(SelectedPlan);
+        RefreshPlanResults();
+        Save();
+    }
+
+    private void DeletePlanItem(object? parameter)
+    {
+        PlanItem? item = null;
+        if (parameter is PlanCalendarDetailItem detail)
+        {
+            item = detail.Plan;
+        }
+        else if (parameter is PlanItem plan)
+        {
+            item = plan;
+        }
+
+        if (item is null)
+        {
+            return;
+        }
+
+        if (SelectedPlan?.Id == item.Id)
+        {
+            IsPlanEditorOpen = false;
+        }
+
+        Plans.Remove(item);
         RefreshPlanResults();
         Save();
     }
@@ -2768,6 +2917,28 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         }
 
         OnPropertyChanged(nameof(SelectedPlanDateCount));
+    }
+
+    private void RefreshTodayPlanSummaryItems()
+    {
+        var today = DateTime.Today;
+        var items = Plans
+            .Where(plan => IsPlanOnDate(plan, today))
+            .OrderBy(plan => plan.Status == PlanItemStatus.Completed)
+            .ThenByDescending(plan => plan.Priority)
+            .ThenBy(plan => GetPlanSortDate(plan, today))
+            .ThenByDescending(plan => plan.UpdatedAt)
+            .Select(plan => new PlanCalendarEventItem
+            {
+                Plan = plan,
+                TimeText = BuildPlanTimeText(plan, today),
+                StatusText = plan.StatusText,
+                IsTargetDate = plan.TargetCompletedAt?.Date == today || plan.ActualCompletedAt?.Date == today
+            })
+            .ToList();
+
+        Replace(TodayPlanSummaryItems, items);
+        OnPropertyChanged(nameof(TodayPlanSummaryCount));
     }
 
     private IEnumerable<PlanItem> GetPlansForDate(DateTime date)

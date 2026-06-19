@@ -79,6 +79,15 @@ public sealed class StateStore
         state.Settings.CustomAppDirectories ??= [];
         state.Settings.LogDirectory = AppDiagnostics.ResolveLogDirectory(state.Settings.LogDirectory);
         state.Settings.ExchangeRatesToCny = NormalizeRates(state.Settings.ExchangeRatesToCny);
+        if (!double.IsFinite(state.Settings.PlanSummaryWindowOpacity))
+        {
+            state.Settings.PlanSummaryWindowOpacity = 0.88;
+        }
+        else
+        {
+            state.Settings.PlanSummaryWindowOpacity = Math.Clamp(state.Settings.PlanSummaryWindowOpacity, 0.2, 1.0);
+        }
+
         if (!double.IsFinite(state.Settings.NoteFontSize) || state.Settings.NoteFontSize <= 0)
         {
             state.Settings.NoteFontSize = 18;

@@ -21,6 +21,7 @@ public partial class MainWindow : Window
     private readonly System.Drawing.Icon _appIcon = LoadTrayIcon();
     private readonly Forms.NotifyIcon _trayIcon;
     private SystemMonitorWindow? _systemMonitorWindow;
+    private PlanSummaryWindow? _planSummaryWindow;
     private IntPtr _pasteTargetWindow;
     private bool _isExiting;
 
@@ -53,6 +54,7 @@ public partial class MainWindow : Window
             RestoreWindow();
         });
         UpdateSystemMonitorWindow();
+        UpdatePlanSummaryWindow();
         UpdateUiActivityState();
     }
 
@@ -62,6 +64,15 @@ public partial class MainWindow : Window
         {
             UpdateSystemMonitorWindow();
             UpdateUiActivityState();
+            return;
+        }
+
+        if (e.PropertyName == nameof(MainViewModel.PlanSummaryWindowEnabled)
+            || e.PropertyName == nameof(MainViewModel.PlanSummaryWindowTopmost)
+            || e.PropertyName == nameof(MainViewModel.PlanSummaryWindowClickThrough)
+            || e.PropertyName == nameof(MainViewModel.PlanSummaryWindowOpacity))
+        {
+            UpdatePlanSummaryWindow();
         }
     }
 
@@ -98,6 +109,42 @@ public partial class MainWindow : Window
         UpdateUiActivityState();
     }
 
+    private void UpdatePlanSummaryWindow()
+    {
+        if (_viewModel.PlanSummaryWindowEnabled)
+        {
+            if (_planSummaryWindow is null)
+            {
+                _planSummaryWindow = new PlanSummaryWindow
+                {
+                    DataContext = _viewModel
+                };
+                _planSummaryWindow.IsVisibleChanged += OnPlanSummaryWindowIsVisibleChanged;
+                _planSummaryWindow.Closed += (_, _) =>
+                {
+                    _planSummaryWindow.IsVisibleChanged -= OnPlanSummaryWindowIsVisibleChanged;
+                    _planSummaryWindow = null;
+                    _viewModel.SetPlanSummaryWindowVisible(false);
+                };
+            }
+
+            _planSummaryWindow.ApplyWindowOptions(
+                _viewModel.PlanSummaryWindowTopmost,
+                _viewModel.PlanSummaryWindowClickThrough,
+                _viewModel.PlanSummaryWindowOpacity);
+            if (!_planSummaryWindow.IsVisible)
+            {
+                _planSummaryWindow.Show();
+            }
+
+            _viewModel.SetPlanSummaryWindowVisible(true);
+            return;
+        }
+
+        _viewModel.SetPlanSummaryWindowVisible(false);
+        _planSummaryWindow?.Hide();
+    }
+
     private void OnIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         UpdateUiActivityState();
@@ -106,6 +153,11 @@ public partial class MainWindow : Window
     private void OnSystemMonitorWindowIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
     {
         UpdateUiActivityState();
+    }
+
+    private void OnPlanSummaryWindowIsVisibleChanged(object sender, DependencyPropertyChangedEventArgs e)
+    {
+        _viewModel.SetPlanSummaryWindowVisible(_planSummaryWindow?.IsVisible == true);
     }
 
     private void UpdateUiActivityState()
@@ -253,6 +305,8 @@ public partial class MainWindow : Window
         _viewModel.PropertyChanged -= OnViewModelPropertyChanged;
         _systemMonitorWindow?.Close();
         _systemMonitorWindow = null;
+        _planSummaryWindow?.Close();
+        _planSummaryWindow = null;
         _viewModel.Dispose();
         _hotKeys.Dispose();
         _trayIcon.Visible = false;

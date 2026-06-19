@@ -40,6 +40,10 @@ public sealed class AppSettings
     public bool LoggingEnabled { get; set; } = true;
     public string LogDirectory { get; set; } = string.Empty;
     public bool SystemMonitorEnabled { get; set; }
+    public bool PlanSummaryWindowEnabled { get; set; }
+    public bool PlanSummaryWindowTopmost { get; set; } = true;
+    public bool PlanSummaryWindowClickThrough { get; set; }
+    public double PlanSummaryWindowOpacity { get; set; } = 0.88;
     public double NoteFontSize { get; set; } = 18;
     public List<string> CustomAppDirectories { get; set; } = [];
     public Dictionary<string, double> ExchangeRatesToCny { get; set; } = new(StringComparer.OrdinalIgnoreCase)

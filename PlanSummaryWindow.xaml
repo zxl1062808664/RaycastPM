@@ -1,0 +1,179 @@
+<Window x:Class="RaycastPM.PlanSummaryWindow"
+        xmlns="http://schemas.microsoft.com/winfx/2006/xaml/presentation"
+        xmlns:x="http://schemas.microsoft.com/winfx/2006/xaml"
+        Width="196"
+        Height="320"
+        MinWidth="180"
+        MaxWidth="260"
+        MinHeight="240"
+        WindowStyle="None"
+        ResizeMode="NoResize"
+        AllowsTransparency="True"
+        Background="Transparent"
+        ShowActivated="False"
+        ShowInTaskbar="False"
+        Topmost="True">
+    <Window.Resources>
+        <Style x:Key="SummaryScrollBarThumb" TargetType="Thumb">
+            <Setter Property="Background" Value="#30FFFFFF" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="Thumb">
+                        <Border Background="{TemplateBinding Background}"
+                                CornerRadius="3" />
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+
+        <Style TargetType="ScrollBar">
+            <Setter Property="Background" Value="Transparent" />
+            <Setter Property="BorderThickness" Value="0" />
+            <Setter Property="Width" Value="4" />
+            <Setter Property="Opacity" Value="0.28" />
+            <Setter Property="Template">
+                <Setter.Value>
+                    <ControlTemplate TargetType="ScrollBar">
+                        <Grid Background="Transparent">
+                            <Track x:Name="PART_Track" IsDirectionReversed="True">
+                                <Track.DecreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageUpCommand" Opacity="0" />
+                                </Track.DecreaseRepeatButton>
+                                <Track.Thumb>
+                                    <Thumb Style="{StaticResource SummaryScrollBarThumb}" />
+                                </Track.Thumb>
+                                <Track.IncreaseRepeatButton>
+                                    <RepeatButton Command="ScrollBar.PageDownCommand" Opacity="0" />
+                                </Track.IncreaseRepeatButton>
+                            </Track>
+                        </Grid>
+                        <ControlTemplate.Triggers>
+                            <Trigger Property="IsMouseOver" Value="True">
+                                <Setter Property="Opacity" Value="0.92" />
+                            </Trigger>
+                            <Trigger Property="IsEnabled" Value="False">
+                                <Setter Property="Opacity" Value="0" />
+                            </Trigger>
+                        </ControlTemplate.Triggers>
+                    </ControlTemplate>
+                </Setter.Value>
+            </Setter>
+        </Style>
+    </Window.Resources>
+    <Border x:Name="SummaryRoot"
+            Background="#D81A1A1A"
+            BorderBrush="#44FFFFFF"
+            BorderThickness="1"
+            CornerRadius="16"
+            Padding="12,12,10,12">
+        <Grid>
+            <Grid.RowDefinitions>
+                <RowDefinition Height="Auto" />
+                <RowDefinition Height="10" />
+                <RowDefinition Height="*" />
+            </Grid.RowDefinitions>
+
+            <StackPanel>
+                <TextBlock Text="今日安排"
+                           FontSize="14"
+                           FontWeight="SemiBold"
+                           Foreground="{StaticResource TextPrimaryBrush}" />
+                <TextBlock Margin="0,4,0,0"
+                           Text="{Binding TodayPlanSummaryCount, StringFormat=共 {0} 项}"
+                           FontSize="11"
+                           Foreground="{StaticResource TextMutedBrush}" />
+            </StackPanel>
+
+            <Border Grid.Row="2"
+                    Background="#15000000"
+                    CornerRadius="12">
+                <Grid>
+                    <ScrollViewer VerticalScrollBarVisibility="Auto"
+                                  HorizontalScrollBarVisibility="Disabled"
+                                  Padding="0,4,0,0">
+                        <ItemsControl ItemsSource="{Binding TodayPlanSummaryItems}">
+                            <ItemsControl.ItemTemplate>
+                                <DataTemplate>
+                                    <Border Margin="0,0,0,8"
+                                            Padding="8,8,8,7"
+                                            Background="#16FFFFFF"
+                                            BorderBrush="#22FFFFFF"
+                                            BorderThickness="1"
+                                            CornerRadius="10">
+                                        <Grid>
+                                            <Grid.ColumnDefinitions>
+                                                <ColumnDefinition Width="Auto" />
+                                                <ColumnDefinition Width="8" />
+                                                <ColumnDefinition Width="*" />
+                                            </Grid.ColumnDefinitions>
+
+                                            <Border Width="6"
+                                                    Height="6"
+                                                    Margin="0,6,0,0"
+                                                    VerticalAlignment="Top"
+                                                    CornerRadius="3">
+                                                <Border.Style>
+                                                    <Style TargetType="Border">
+                                                        <Setter Property="Background" Value="#FFD66A" />
+                                                        <Style.Triggers>
+                                                            <DataTrigger Binding="{Binding Plan.Status}" Value="Completed">
+                                                                <Setter Property="Background" Value="#67D38D" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding Plan.Status}" Value="Blocked">
+                                                                <Setter Property="Background" Value="#FF7878" />
+                                                            </DataTrigger>
+                                                            <DataTrigger Binding="{Binding Plan.Status}" Value="InProgress">
+                                                                <Setter Property="Background" Value="#7AB8FF" />
+                                                            </DataTrigger>
+                                                        </Style.Triggers>
+                                                    </Style>
+                                                </Border.Style>
+                                            </Border>
+
+                                            <StackPanel Grid.Column="2">
+                                                <TextBlock Text="{Binding Plan.Title}"
+                                                           FontSize="12"
+                                                           FontWeight="SemiBold"
+                                                           Foreground="{StaticResource TextPrimaryBrush}"
+                                                           TextWrapping="Wrap"
+                                                           TextTrimming="CharacterEllipsis"
+                                                           MaxHeight="34" />
+                                                <TextBlock Margin="0,4,0,0"
+                                                           Text="{Binding TimeText}"
+                                                           FontSize="10.5"
+                                                           Foreground="{StaticResource TextSecondaryBrush}"
+                                                           TextTrimming="CharacterEllipsis" />
+                                                <TextBlock Margin="0,2,0,0"
+                                                           Text="{Binding StatusText}"
+                                                           FontSize="10.5"
+                                                           Foreground="{StaticResource TextMutedBrush}" />
+                                            </StackPanel>
+                                        </Grid>
+                                    </Border>
+                                </DataTemplate>
+                            </ItemsControl.ItemTemplate>
+                        </ItemsControl>
+                    </ScrollViewer>
+
+                    <TextBlock Text="今天还没有计划"
+                               FontSize="12"
+                               Foreground="{StaticResource TextMutedBrush}"
+                               HorizontalAlignment="Center"
+                               VerticalAlignment="Center">
+                        <TextBlock.Style>
+                            <Style TargetType="TextBlock">
+                                <Setter Property="Visibility" Value="Collapsed" />
+                                <Style.Triggers>
+                                    <DataTrigger Binding="{Binding TodayPlanSummaryCount}" Value="0">
+                                        <Setter Property="Visibility" Value="Visible" />
+                                    </DataTrigger>
+                                </Style.Triggers>
+                            </Style>
+                        </TextBlock.Style>
+                    </TextBlock>
+                </Grid>
+            </Border>
+        </Grid>
+    </Border>
+</Window>
