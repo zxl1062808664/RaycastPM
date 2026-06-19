@@ -1,6 +1,7 @@
 using System.Runtime.InteropServices;
 using System.Windows;
 using System.Windows.Interop;
+using System.Windows.Input;
 
 namespace RaycastPM;
 
@@ -40,6 +41,22 @@ public partial class PlanSummaryWindow : Window
     private void OnSourceInitialized(object? sender, EventArgs e)
     {
         ApplyExtendedWindowStyles(_isClickThrough);
+    }
+
+    private void SummaryRoot_MouseLeftButtonDown(object sender, MouseButtonEventArgs e)
+    {
+        if (_isClickThrough || e.ButtonState != MouseButtonState.Pressed)
+        {
+            return;
+        }
+
+        try
+        {
+            DragMove();
+        }
+        catch
+        {
+        }
     }
 
     private void ApplyExtendedWindowStyles(bool clickThrough)

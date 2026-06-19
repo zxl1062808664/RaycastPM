@@ -327,7 +327,7 @@
                         <Border Background="{TemplateBinding Background}"
                                 BorderThickness="0">
                             <Grid>
-                                <ScrollViewer x:Name="PART_ContentElement"
+                                <ScrollViewer x:Name="PART_ContentHost"
                                               TextElement.Foreground="{TemplateBinding Foreground}"
                                               TextElement.FontSize="{TemplateBinding FontSize}"
                                               Focusable="False"
@@ -3398,10 +3398,14 @@
                                            Foreground="#D2A06D"
                                            FontSize="13"
                                            FontWeight="SemiBold" />
-                                <TextBlock Text="{Binding SelectedPlan.Title, TargetNullValue=未选择计划}"
-                                           FontSize="22"
-                                           FontWeight="Bold"
-                                           Margin="0,8,0,0" />
+                                <TextBox Text="{Binding SelectedPlan.Title, UpdateSourceTrigger=PropertyChanged, TargetNullValue=未选择计划}"
+                                         FontSize="22"
+                                         FontWeight="Bold"
+                                         Margin="0,8,0,0"
+                                         Padding="0"
+                                         BorderThickness="0"
+                                         Background="Transparent"
+                                         VerticalContentAlignment="Center" />
                             </StackPanel>
                             <StackPanel Grid.Column="1"
                                         Orientation="Horizontal"
