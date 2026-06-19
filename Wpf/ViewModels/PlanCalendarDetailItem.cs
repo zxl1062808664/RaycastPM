@@ -22,6 +22,18 @@ public sealed class PlanCalendarDetailItem : ObservableObject
 
     public required string TagText { get; init; }
 
+    /// <summary>
+    /// 状态分类标识，用于在 UI 上为状态标签着色。
+    /// 取值：Overdue / Completed / Blocked / InProgress。
+    /// </summary>
+    public required string StatusKind { get; init; }
+
+    /// <summary>
+    /// 计划原始状态标识，用于为“状态”徽章着色。
+    /// 取值同 PlanItemStatus 枚举名：NotStarted / InProgress / Completed / Blocked。
+    /// </summary>
+    public required string PlanStatusKind { get; init; }
+
     public bool IsSelected
     {
         get => _isSelected;

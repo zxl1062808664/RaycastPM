@@ -20,9 +20,55 @@ namespace RaycastPM.ViewModels;
 
 public sealed class MainViewModel : ObservableObject, IDisposable
 {
+    private static readonly ChineseLunisolarCalendar ChineseCalendar = new();
     private static readonly TimeSpan ExchangeRateRefreshInterval = TimeSpan.FromMinutes(10);
     private static readonly TimeSpan SystemMonitorRefreshInterval = TimeSpan.FromSeconds(1);
     private const string WebSearchUrlTemplate = "https://www.bing.com/search?q={0}";
+    private static readonly string[] LunarMonthNames =
+    [
+        "正月", "二月", "三月", "四月", "五月", "六月",
+        "七月", "八月", "九月", "十月", "冬月", "腊月"
+    ];
+    private static readonly string[] LunarDayNames =
+    [
+        "初一", "初二", "初三", "初四", "初五", "初六", "初七", "初八", "初九", "初十",
+        "十一", "十二", "十三", "十四", "十五", "十六", "十七", "十八", "十九", "二十",
+        "廿一", "廿二", "廿三", "廿四", "廿五", "廿六", "廿七", "廿八", "廿九", "三十"
+    ];
+    private static readonly Dictionary<int, string> SolarTermByMonthDay = new()
+    {
+        [101] = "小寒", [120] = "大寒",
+        [204] = "立春", [219] = "雨水",
+        [305] = "惊蛰", [320] = "春分",
+        [404] = "清明", [420] = "谷雨",
+        [505] = "立夏", [521] = "小满",
+        [605] = "芒种", [621] = "夏至",
+        [707] = "小暑", [722] = "大暑",
+        [807] = "立秋", [823] = "处暑",
+        [907] = "白露", [923] = "秋分",
+        [1008] = "寒露", [1023] = "霜降",
+        [1107] = "立冬", [1122] = "小雪",
+        [1207] = "大雪", [1221] = "冬至"
+    };
+    private static readonly Dictionary<int, string> SolarFestivalByMonthDay = new()
+    {
+        [101] = "元旦",
+        [214] = "情人节",
+        [501] = "劳动节",
+        [1001] = "国庆节",
+        [1225] = "圣诞节"
+    };
+    private static readonly Dictionary<int, string> LunarFestivalByMonthDay = new()
+    {
+        [101] = "春节",
+        [115] = "元宵",
+        [505] = "端午节",
+        [707] = "七夕",
+        [815] = "中秋",
+        [909] = "重阳",
+        [1208] = "腊八",
+        [1224] = "小年"
+    };
     private static readonly IReadOnlyList<string> HotKeyOptions =
     [
         "Space",
@@ -201,6 +247,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         ShowNextPlanMonthCommand = new RelayCommand(() => ChangePlanCalendarMonth(1));
         SelectPlanCalendarDayCommand = new RelayCommand(SelectPlanCalendarDay);
         SelectPlanDayDetailCommand = new RelayCommand(SelectPlanDayDetail);
+        OpenPlanDayDetailEditorCommand = new RelayCommand(OpenPlanDayDetailEditor);
         RefreshRatesCommand = new RelayCommand(() => Observe(RefreshRatesAsync(), "refresh rates command"));
         CopyCalculatorResultCommand = new RelayCommand(CopyCalculatorResult, () => CalculatorResult is not null || CurrencyResult is not null);
         SaveCommand = new RelayCommand(Save);
@@ -290,6 +337,7 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     public RelayCommand ShowNextPlanMonthCommand { get; }
     public RelayCommand SelectPlanCalendarDayCommand { get; }
     public RelayCommand SelectPlanDayDetailCommand { get; }
+    public RelayCommand OpenPlanDayDetailEditorCommand { get; }
     public RelayCommand RefreshRatesCommand { get; }
     public RelayCommand CopyCalculatorResultCommand { get; }
     public RelayCommand SaveCommand { get; }
@@ -649,6 +697,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                 AddPlanImageFromFileCommand.RaiseCanExecuteChanged();
                 SelectedPlanImage = _selectedPlan?.Images.FirstOrDefault();
                 SyncSelectedPlanTimeEditors();
+                OnPropertyChanged(nameof(SelectedPlanStatus));
+                OnPropertyChanged(nameof(SelectedPlanPriority));
                 if (value is null)
                 {
                     if (!_ignoreTransientPlanSelectionClearing)
@@ -690,6 +740,37 @@ public sealed class MainViewModel : ObservableObject, IDisposable
             {
                 SelectedPlan = value.Plan;
             }
+        }
+    }
+
+    public PlanItemStatus? SelectedPlanStatus
+    {
+        get => SelectedPlan?.Status;
+        set
+        {
+            if (SelectedPlan is null || value is null || SelectedPlan.Status == value.Value)
+            {
+                return;
+            }
+
+            ApplySelectedPlanStatus(value.Value);
+            OnPropertyChanged();
+        }
+    }
+
+    public PlanPriority? SelectedPlanPriority
+    {
+        get => SelectedPlan?.Priority;
+        set
+        {
+            if (SelectedPlan is null || value is null || SelectedPlan.Priority == value.Value)
+            {
+                return;
+            }
+
+            SelectedPlan.Priority = value.Value;
+            TouchSelectedPlan();
+            OnPropertyChanged();
         }
     }
 
@@ -2591,6 +2672,19 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         RefreshSelectedPlanDayDetails();
     }
 
+    private void OpenPlanDayDetailEditor(object? parameter)
+    {
+        if (parameter is not PlanCalendarDetailItem detail)
+        {
+            return;
+        }
+
+        SelectedPlanDayDetail = detail;
+        SelectedPlan = detail.Plan;
+        IsPlanEditorOpen = true;
+        RefreshSelectedPlanDayDetails();
+    }
+
     private void RefreshPlanCalendar()
     {
         var firstVisibleDate = GetCalendarStartDate(PlanCalendarMonth);
@@ -2603,7 +2697,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
                     Date = date,
                     IsCurrentMonth = date.Month == PlanCalendarMonth.Month && date.Year == PlanCalendarMonth.Year,
                     IsToday = date == DateTime.Today,
-                    Plans = GetPlansForDate(date).ToList()
+                    Plans = GetPlansForDate(date).ToList(),
+                    SecondaryText = BuildCalendarSecondaryText(date)
                 };
             })
             .ToList();
@@ -2631,16 +2726,22 @@ public sealed class MainViewModel : ObservableObject, IDisposable
     private void RefreshSelectedPlanDayDetails()
     {
         var items = GetPlansForDate(SelectedPlanDate)
-            .Select(plan => new PlanCalendarDetailItem
+            .Select(plan =>
             {
-                Plan = plan,
-                DateText = BuildPlanDateRangeText(plan),
-                TimeText = BuildPlanTimeText(plan, SelectedPlanDate),
-                DurationText = BuildPlanDurationText(plan),
-                StatusText = plan.StatusText,
-                PriorityText = plan.PriorityText,
-                SummaryText = plan.SummaryText,
-                TagText = BuildPlanTagText(plan)
+                var (tagText, statusKind) = BuildPlanTagText(plan);
+                return new PlanCalendarDetailItem
+                {
+                    Plan = plan,
+                    DateText = BuildPlanDateRangeText(plan),
+                    TimeText = BuildPlanTimeText(plan, SelectedPlanDate),
+                    DurationText = BuildPlanDurationText(plan),
+                    StatusText = plan.StatusText,
+                    PriorityText = plan.PriorityText,
+                    SummaryText = plan.SummaryText,
+                    TagText = tagText,
+                    StatusKind = statusKind,
+                    PlanStatusKind = plan.Status.ToString()
+                };
             })
             .ToList();
 
@@ -2717,6 +2818,42 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return firstDay.AddDays(-offset);
     }
 
+    private static string BuildCalendarSecondaryText(DateTime date)
+    {
+        var solarKey = date.Month * 100 + date.Day;
+        if (SolarTermByMonthDay.TryGetValue(solarKey, out var solarTerm))
+        {
+            return solarTerm;
+        }
+
+        if (SolarFestivalByMonthDay.TryGetValue(solarKey, out var solarFestival))
+        {
+            return solarFestival;
+        }
+
+        var lunarMonth = ChineseCalendar.GetMonth(date);
+        var lunarDay = ChineseCalendar.GetDayOfMonth(date);
+        var leapMonth = ChineseCalendar.GetLeapMonth(ChineseCalendar.GetYear(date));
+        var isLeapMonth = leapMonth > 0 && lunarMonth == leapMonth;
+        var normalizedLunarMonth = leapMonth > 0 && lunarMonth > leapMonth
+            ? lunarMonth - 1
+            : lunarMonth;
+
+        var lunarKey = normalizedLunarMonth * 100 + lunarDay;
+        if (!isLeapMonth && LunarFestivalByMonthDay.TryGetValue(lunarKey, out var lunarFestival))
+        {
+            return lunarFestival;
+        }
+
+        if (lunarDay == 1)
+        {
+            var monthName = LunarMonthNames[Math.Clamp(normalizedLunarMonth - 1, 0, LunarMonthNames.Length - 1)];
+            return isLeapMonth ? $"闰{monthName}" : monthName;
+        }
+
+        return LunarDayNames[Math.Clamp(lunarDay - 1, 0, LunarDayNames.Length - 1)];
+    }
+
     private static string BuildPlanDateRangeText(PlanItem plan)
     {
         var start = plan.StartAt.ToString("yyyy/M/d");
@@ -2751,15 +2888,15 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         return days == 1 ? "1天安排" : $"{days}天安排";
     }
 
-    private static string BuildPlanTagText(PlanItem plan)
+    private static (string Text, string Kind) BuildPlanTagText(PlanItem plan)
     {
         return plan.Status switch
         {
-            PlanItemStatus.Completed => "已完成",
-            PlanItemStatus.Blocked => "已阻塞",
-            PlanItemStatus.InProgress when plan.TargetCompletedAt is { } target && target < DateTime.Now => "已延期",
-            PlanItemStatus.NotStarted when plan.TargetCompletedAt is { } target && target < DateTime.Now => "已延期",
-            _ => "进行中"
+            PlanItemStatus.Completed => ("已完成", "Completed"),
+            PlanItemStatus.Blocked => ("已阻塞", "Blocked"),
+            PlanItemStatus.InProgress when plan.TargetCompletedAt is { } target && target < DateTime.Now => ("已延期", "Overdue"),
+            PlanItemStatus.NotStarted when plan.TargetCompletedAt is { } target && target < DateTime.Now => ("已延期", "Overdue"),
+            _ => ("进行中", "InProgress")
         };
     }
 
@@ -3194,6 +3331,8 @@ public sealed class MainViewModel : ObservableObject, IDisposable
         SetSelectedPlanTargetCompletedAtCommand.RaiseCanExecuteChanged();
         ClearSelectedPlanTargetCompletedAtCommand.RaiseCanExecuteChanged();
         ClearSelectedPlanActualCompletedAtCommand.RaiseCanExecuteChanged();
+        OnPropertyChanged(nameof(SelectedPlanStatus));
+        OnPropertyChanged(nameof(SelectedPlanPriority));
         NotifyPlanSummaryChanged();
         Save();
     }

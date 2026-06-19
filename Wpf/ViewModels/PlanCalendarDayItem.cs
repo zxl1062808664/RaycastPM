@@ -15,6 +15,8 @@ public sealed class PlanCalendarDayItem : ObservableObject
 
     public required IReadOnlyList<PlanItem> Plans { get; init; }
 
+    public required string SecondaryText { get; init; }
+
     public bool IsSelected
     {
         get => _isSelected;
@@ -26,37 +28,4 @@ public sealed class PlanCalendarDayItem : ObservableObject
     public int PlanCount => Plans.Count;
 
     public bool HasPlans => PlanCount > 0;
-
-    public bool HasOverflowPlans => PlanCount > 1;
-
-    public string OverflowText => HasOverflowPlans ? $"+{PlanCount - 1}" : string.Empty;
-
-    public PlanItem? PrimaryPlan => Plans.FirstOrDefault();
-
-    public string CountText => $"{PlanCount}项";
-
-    public string PrimaryPlanSubtitle
-    {
-        get
-        {
-            if (PrimaryPlan is null)
-            {
-                return string.Empty;
-            }
-
-            if (PrimaryPlan.TargetCompletedAt is { } targetCompletedAt && targetCompletedAt.Date == Date)
-            {
-                return $"计划 {targetCompletedAt:HH:mm}";
-            }
-
-            if (PrimaryPlan.StartAt.Date == Date)
-            {
-                return $"开始 {PrimaryPlan.StartAt:HH:mm}";
-            }
-
-            return PrimaryPlan.StatusText;
-        }
-    }
-
-    public bool HasPrimaryPlanSubtitle => !string.IsNullOrWhiteSpace(PrimaryPlanSubtitle);
 }
